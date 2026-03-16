@@ -61,19 +61,21 @@ type correlationRuleResource struct {
 
 // CorrelationRuleResourceModel defines the Terraform resource model.
 type CorrelationRuleResourceModel struct {
-	ID              types.String `tfsdk:"id"`
-	CustomerID      types.String `tfsdk:"customer_id"`
-	Name            types.String `tfsdk:"name"`
-	Description     types.String `tfsdk:"description"`
-	Severity        types.Int32  `tfsdk:"severity"`
-	Status          types.String `tfsdk:"status"`
-	Comment         types.String `tfsdk:"comment"`
-	Tactic          types.String `tfsdk:"tactic"`
-	Technique       types.String `tfsdk:"technique"`
-	TriggerOnCreate types.Bool   `tfsdk:"trigger_on_create"`
-	Search          types.Object `tfsdk:"search"`
-	Operation       types.Object `tfsdk:"operation"`
-	MitreAttack     types.List   `tfsdk:"mitre_attack"`
+	ID                    types.String `tfsdk:"id"`
+	CustomerID            types.String `tfsdk:"customer_id"`
+	Name                  types.String `tfsdk:"name"`
+	Description           types.String `tfsdk:"description"`
+	Severity              types.Int32  `tfsdk:"severity"`
+	Status                types.String `tfsdk:"status"`
+	Comment               types.String `tfsdk:"comment"`
+	Tactic                types.String `tfsdk:"tactic"`
+	Technique             types.String `tfsdk:"technique"`
+	TriggerOnCreate       types.Bool   `tfsdk:"trigger_on_create"`
+	Search                types.Object `tfsdk:"search"`
+	Operation             types.Object `tfsdk:"operation"`
+	MitreAttack           types.List   `tfsdk:"mitre_attack"`
+	Notification          types.List   `tfsdk:"notification"`
+	GuardrailNotification types.List   `tfsdk:"guardrail_notification"`
 }
 
 // SearchModel defines the search block.
@@ -139,6 +141,42 @@ func (m MitreAttackModel) AttributeTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"tactic_id":    types.StringType,
 		"technique_id": types.StringType,
+	}
+}
+
+// NotificationModel defines the notification block.
+type NotificationModel struct {
+	Type    types.String `tfsdk:"type"`
+	Config  types.Object `tfsdk:"config"`
+	Options types.Map    `tfsdk:"options"`
+}
+
+// AttributeTypes returns the attribute types for NotificationModel.
+func (m NotificationModel) AttributeTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"type":    types.StringType,
+		"config":  types.ObjectType{AttrTypes: NotificationConfigModel{}.AttributeTypes()},
+		"options": types.MapType{ElemType: types.StringType},
+	}
+}
+
+// NotificationConfigModel defines the config block within notification.
+type NotificationConfigModel struct {
+	Cid        types.String `tfsdk:"cid"`
+	ConfigID   types.String `tfsdk:"config_id"`
+	PluginID   types.String `tfsdk:"plugin_id"`
+	Recipients types.List   `tfsdk:"recipients"`
+	Severity   types.String `tfsdk:"severity"`
+}
+
+// AttributeTypes returns the attribute types for NotificationConfigModel.
+func (m NotificationConfigModel) AttributeTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"cid":        types.StringType,
+		"config_id":  types.StringType,
+		"plugin_id":  types.StringType,
+		"recipients": types.ListType{ElemType: types.StringType},
+		"severity":   types.StringType,
 	}
 }
 
@@ -292,13 +330,29 @@ func (r *correlationRuleResource) Schema(
 						Optional:            true,
 						Computed:            true,
 						Default:             stringdefault.StaticString("scheduled"),
-						MarkdownDescription: "The execution mode for the rule. Currently only `scheduled` is supported. Defaults to `scheduled`.",
+						MarkdownDescription: "The execution mode for the rule. Currently only `scheduled` is supported. Defaults to `scheduled`. **Note:** Changes to this field require the resource to be destroyed and recreated.",
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.RequiresReplace(),
+						},
 					},
 					"use_ingest_time": schema.BoolAttribute{
 						Optional:            true,
 						Computed:            true,
 						Default:             booldefault.StaticBool(false),
-						MarkdownDescription: "If true, use the timestamp of the moment the event was ingested by crowdstrike cloud. Otherwise use the moment the event was generated on the system.",
+						MarkdownDescription: "If true, use the timestamp of the moment the event was ingested by crowdstrike cloud. Otherwise use the moment the event was generated on the system. **Note:** Due to an API limitation, changing this value from `true` to `false` requires the resource to be destroyed and recreated.",
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.RequiresReplaceIf(
+								func(_ context.Context, req planmodifier.BoolRequest, resp *boolplanmodifier.RequiresReplaceIfFuncResponse) {
+									// The API does not support unsetting use_ingest_time via PATCH.
+									// Force replace when changing from true to false.
+									if req.StateValue.ValueBool() && !req.PlanValue.ValueBool() {
+										resp.RequiresReplace = true
+									}
+								},
+								"Requires replacement when changing use_ingest_time from true to false due to an API limitation.",
+								"Requires replacement when changing `use_ingest_time` from `true` to `false` due to an API limitation.",
+							),
+						},
 					},
 					// TODO: Find something, anything, on this!
 					"case_template_id": schema.StringAttribute{
@@ -338,7 +392,20 @@ func (r *correlationRuleResource) Schema(
 					"stop_on": schema.StringAttribute{
 						CustomType:          timetypes.RFC3339Type{},
 						Optional:            true,
-						MarkdownDescription: "The UTC time to stop running the query (e.g., `2024-12-31T23:59:59Z`). If not specified, no stop time is used.",
+						MarkdownDescription: "The UTC time to stop running the query (e.g., `2024-12-31T23:59:59Z`). If not specified, no stop time is used. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.",
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.RequiresReplaceIf(
+								func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+									// The API does not support clearing stop_on via PATCH.
+									// Force replace when removing a previously set value.
+									if !req.StateValue.IsNull() && req.PlanValue.IsNull() {
+										resp.RequiresReplace = true
+									}
+								},
+								"Requires replacement when removing stop_on due to an API limitation.",
+								"Requires replacement when removing `stop_on` due to an API limitation.",
+							),
+						},
 					},
 				},
 			},
@@ -359,6 +426,102 @@ func (r *correlationRuleResource) Schema(
 							Computed:            true,
 							Default:             stringdefault.StaticString(""),
 							MarkdownDescription: "The MITRE ATT&CK technique ID (e.g., `T1078`).",
+						},
+					},
+				},
+			},
+			"notification": schema.ListNestedBlock{
+				MarkdownDescription: "Notification configurations for the rule. Notifications are sent when the rule triggers.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"type": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The notification type (e.g., `email`, `slack`, `webhook`).",
+							Validators: []validator.String{
+								fwvalidators.StringNotWhitespace(),
+							},
+						},
+						"options": schema.MapAttribute{
+							Optional:            true,
+							ElementType:         types.StringType,
+							MarkdownDescription: "Additional options for the notification. The available options depend on the notification type.",
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"config": schema.SingleNestedBlock{
+							MarkdownDescription: "The notification configuration.",
+							Attributes: map[string]schema.Attribute{
+								"cid": schema.StringAttribute{
+									Optional:            true,
+									Computed:            true,
+									MarkdownDescription: "The CID for the notification configuration. Defaults to the rule's customer_id if not specified.",
+								},
+								"config_id": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "The configuration ID for the notification.",
+								},
+								"plugin_id": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "The plugin ID for the notification.",
+								},
+								"recipients": schema.ListAttribute{
+									Required:            true,
+									ElementType:         types.StringType,
+									MarkdownDescription: "The list of recipients for the notification.",
+								},
+								"severity": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "The severity level for the notification.",
+								},
+							},
+						},
+					},
+				},
+			},
+			"guardrail_notification": schema.ListNestedBlock{
+				MarkdownDescription: "Guardrail notification configurations for the rule. Guardrail notifications are sent when guardrail conditions are met.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"type": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The notification type (e.g., `email`, `slack`, `webhook`).",
+							Validators: []validator.String{
+								fwvalidators.StringNotWhitespace(),
+							},
+						},
+						"options": schema.MapAttribute{
+							Optional:            true,
+							ElementType:         types.StringType,
+							MarkdownDescription: "Additional options for the notification. The available options depend on the notification type.",
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"config": schema.SingleNestedBlock{
+							MarkdownDescription: "The notification configuration.",
+							Attributes: map[string]schema.Attribute{
+								"cid": schema.StringAttribute{
+									Optional:            true,
+									Computed:            true,
+									MarkdownDescription: "The CID for the notification configuration. Defaults to the rule's customer_id if not specified.",
+								},
+								"config_id": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "The configuration ID for the notification.",
+								},
+								"plugin_id": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "The plugin ID for the notification.",
+								},
+								"recipients": schema.ListAttribute{
+									Required:            true,
+									ElementType:         types.StringType,
+									MarkdownDescription: "The list of recipients for the notification.",
+								},
+								"severity": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "The severity level for the notification.",
+								},
+							},
 						},
 					},
 				},
@@ -701,18 +864,34 @@ func (r *correlationRuleResource) buildCreateRequest(
 		return nil, diags
 	}
 
+	// Extract notifications list
+	notifications, d := r.buildCreateNotifications(ctx, plan.Notification, plan.CustomerID.ValueString())
+	diags.Append(d...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	// Extract guardrail notifications list
+	guardrailNotifications, d := r.buildCreateNotifications(ctx, plan.GuardrailNotification, plan.CustomerID.ValueString())
+	diags.Append(d...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
 	createReq := &models.CorrelationrulesapiRuleCreateRequestV1{
-		CustomerID:      utils.Addr(plan.CustomerID.ValueString()),
-		Name:            utils.Addr(plan.Name.ValueString()),
-		Description:     plan.Description.ValueString(),
-		Severity:        utils.Addr(plan.Severity.ValueInt32()),
-		Status:          utils.Addr(plan.Status.ValueString()),
-		TemplateID:      utils.Addr(""),
-		Comment:         plan.Comment.ValueString(),
-		TriggerOnCreate: plan.TriggerOnCreate.ValueBool(),
-		Search:          search,
-		Operation:       operation,
-		MitreAttack:     mitreAttack,
+		CustomerID:             utils.Addr(plan.CustomerID.ValueString()),
+		Name:                   utils.Addr(plan.Name.ValueString()),
+		Description:            plan.Description.ValueString(),
+		Severity:               utils.Addr(plan.Severity.ValueInt32()),
+		Status:                 utils.Addr(plan.Status.ValueString()),
+		TemplateID:             utils.Addr(""),
+		Comment:                plan.Comment.ValueString(),
+		TriggerOnCreate:        plan.TriggerOnCreate.ValueBool(),
+		Search:                 search,
+		Operation:              operation,
+		MitreAttack:            mitreAttack,
+		Notifications:          notifications,
+		GuardrailNotifications: guardrailNotifications,
 	}
 
 	return createReq, diags
@@ -818,14 +997,13 @@ func (r *correlationRuleResource) buildPatchRequest(
 				Filter:         searchModel.Filter.ValueString(),
 				Lookback:       searchModel.Lookback.ValueString(),
 				Outcome:        searchModel.Outcome.ValueString(),
-				TriggerMode:    utils.Addr(searchModel.TriggerMode.ValueString()),
+				TriggerMode:    utils.Addr(searchModel.TriggerMode.ValueString()), // must be a pointer that is not nil for some reason
 				UseIngestTime:  searchModel.UseIngestTime.ValueBool(),
 				CaseTemplateID: searchModel.CaseTemplateID.ValueString(),
 			}
 		}
 	}
 
-	// Only include operation fields that changed
 	operation, d := r.buildPatchOperation(ctx, plan.Operation, state.Operation)
 	diags.Append(d...)
 	if diags.HasError() {
@@ -833,14 +1011,35 @@ func (r *correlationRuleResource) buildPatchRequest(
 	}
 	patchReq.Operation = operation
 
-	// Only include mitre_attack if it changed
 	if !plan.MitreAttack.Equal(state.MitreAttack) {
 		mitreAttack, d := r.buildMitreAttack(ctx, plan.MitreAttack)
 		diags.Append(d...)
 		if diags.HasError() {
 			return nil, diags
 		}
+		// Send an empty slice (not nil) so the API clears existing entries.
+		if mitreAttack == nil {
+			mitreAttack = []*models.CorrelationrulesapiMitreAttackMappingV1{}
+		}
 		patchReq.MitreAttack = mitreAttack
+	}
+
+	if !plan.Notification.Equal(state.Notification) {
+		notifications, d := r.buildPatchNotifications(ctx, plan.Notification, plan.CustomerID.ValueString())
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		patchReq.Notifications = notifications
+	}
+
+	if !plan.GuardrailNotification.Equal(state.GuardrailNotification) {
+		guardrailNotifications, d := r.buildPatchNotifications(ctx, plan.GuardrailNotification, plan.CustomerID.ValueString())
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		patchReq.GuardrailNotifications = guardrailNotifications
 	}
 
 	return patchReq, diags
@@ -874,8 +1073,8 @@ func (r *correlationRuleResource) buildPatchOperation(
 	}
 
 	operation := &models.CorrelationrulesapiPatchRuleOperationV1{}
+	changed := false
 
-	// Only send schedule if it changed
 	if !planOp.Schedule.Equal(stateOp.Schedule) {
 		if !planOp.Schedule.IsNull() && !planOp.Schedule.IsUnknown() {
 			var schedModel ScheduleModel
@@ -886,10 +1085,10 @@ func (r *correlationRuleResource) buildPatchOperation(
 			operation.Schedule = &models.CorrelationrulesapiRuleScheduleV1Patch{
 				Definition: utils.Addr(schedModel.Definition.ValueString()),
 			}
+			changed = true
 		}
 	}
 
-	// Only send start_on if it changed
 	if !planOp.StartOn.Equal(stateOp.StartOn) {
 		if !planOp.StartOn.IsNull() && !planOp.StartOn.IsUnknown() {
 			startOn, err := strfmt.ParseDateTime(planOp.StartOn.ValueString())
@@ -898,16 +1097,20 @@ func (r *correlationRuleResource) buildPatchOperation(
 				return nil, diags
 			}
 			operation.StartOn = &startOn
+			changed = true
 		}
 	}
 
-	// Only send stop_on if it changed
-	// Note: For some reason, patch requires stop_on to be *string.
 	if !planOp.StopOn.Equal(stateOp.StopOn) {
 		if !planOp.StopOn.IsNull() && !planOp.StopOn.IsUnknown() {
 			stopOnStr := planOp.StopOn.ValueString()
 			operation.StopOn = &stopOnStr
+			changed = true
 		}
+	}
+
+	if !changed {
+		return nil, diags
 	}
 
 	return operation, diags
@@ -920,8 +1123,12 @@ func (r *correlationRuleResource) buildMitreAttack(
 ) ([]*models.CorrelationrulesapiMitreAttackMappingV1, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	if mitreAttackList.IsNull() || mitreAttackList.IsUnknown() || len(mitreAttackList.Elements()) == 0 {
+	if mitreAttackList.IsNull() || mitreAttackList.IsUnknown() {
 		return nil, diags
+	}
+
+	if len(mitreAttackList.Elements()) == 0 {
+		return []*models.CorrelationrulesapiMitreAttackMappingV1{}, diags
 	}
 
 	var mitreModels []MitreAttackModel
@@ -939,6 +1146,166 @@ func (r *correlationRuleResource) buildMitreAttack(
 	}
 
 	return mitreAttack, diags
+}
+
+// buildCreateNotifications builds the notifications list for create request.
+// customerID is used as the default value for notification config cid if not explicitly set.
+func (r *correlationRuleResource) buildCreateNotifications(
+	ctx context.Context,
+	notificationList types.List,
+	customerID string,
+) ([]*models.CorrelationrulesapiCreateRuleNotifications, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if notificationList.IsNull() || notificationList.IsUnknown() || len(notificationList.Elements()) == 0 {
+		return nil, diags
+	}
+
+	var notifModels []NotificationModel
+	diags.Append(notificationList.ElementsAs(ctx, &notifModels, false)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	notifications := make([]*models.CorrelationrulesapiCreateRuleNotifications, 0, len(notifModels))
+	for _, n := range notifModels {
+		// Extract config block
+		var configModel NotificationConfigModel
+		diags.Append(n.Config.As(ctx, &configModel, basetypes.ObjectAsOptions{})...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		// Extract recipients list
+		var recipients []string
+		diags.Append(configModel.Recipients.ElementsAs(ctx, &recipients, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		// Use explicit cid if set, otherwise default to rule's customer_id
+		cid := customerID
+		if !configModel.Cid.IsNull() && configModel.Cid.ValueString() != "" {
+			cid = configModel.Cid.ValueString()
+		}
+
+		config := &models.CorrelationrulesapiCreateRuleNotificationConfig{
+			Cid:        utils.Addr(cid),
+			Recipients: recipients,
+		}
+		// Only set optional fields if they have values
+		if !configModel.ConfigID.IsNull() && configModel.ConfigID.ValueString() != "" {
+			config.ConfigID = utils.Addr(configModel.ConfigID.ValueString())
+		}
+		if !configModel.PluginID.IsNull() && configModel.PluginID.ValueString() != "" {
+			config.PluginID = utils.Addr(configModel.PluginID.ValueString())
+		}
+		if !configModel.Severity.IsNull() && configModel.Severity.ValueString() != "" {
+			config.Severity = utils.Addr(configModel.Severity.ValueString())
+		}
+
+		notif := &models.CorrelationrulesapiCreateRuleNotifications{
+			Type:   utils.Addr(n.Type.ValueString()),
+			Config: config,
+		}
+
+		// Extract options map if present
+		if !n.Options.IsNull() && !n.Options.IsUnknown() {
+			options := make(map[string]string)
+			diags.Append(n.Options.ElementsAs(ctx, &options, false)...)
+			if diags.HasError() {
+				return nil, diags
+			}
+			notif.Options = options
+		}
+
+		notifications = append(notifications, notif)
+	}
+
+	return notifications, diags
+}
+
+// buildPatchNotifications builds the notifications list for patch request.
+// customerID is used as the default value for notification config cid if not explicitly set.
+func (r *correlationRuleResource) buildPatchNotifications(
+	ctx context.Context,
+	notificationList types.List,
+	customerID string,
+) ([]*models.CorrelationrulesapiPatchRuleNotificationsV1, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if notificationList.IsNull() || notificationList.IsUnknown() {
+		return nil, diags
+	}
+
+	// An explicitly empty list signals the API to clear all notifications.
+	if len(notificationList.Elements()) == 0 {
+		return []*models.CorrelationrulesapiPatchRuleNotificationsV1{}, diags
+	}
+
+	var notifModels []NotificationModel
+	diags.Append(notificationList.ElementsAs(ctx, &notifModels, false)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	notifications := make([]*models.CorrelationrulesapiPatchRuleNotificationsV1, 0, len(notifModels))
+	for _, n := range notifModels {
+		// Extract config block
+		var configModel NotificationConfigModel
+		diags.Append(n.Config.As(ctx, &configModel, basetypes.ObjectAsOptions{})...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		// Extract recipients list
+		var recipients []string
+		diags.Append(configModel.Recipients.ElementsAs(ctx, &recipients, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		// Use explicit cid if set, otherwise default to rule's customer_id
+		cid := customerID
+		if !configModel.Cid.IsNull() && configModel.Cid.ValueString() != "" {
+			cid = configModel.Cid.ValueString()
+		}
+
+		config := &models.CorrelationrulesapiPatchRuleNotificationConfigV1{
+			Cid:        cid,
+			Recipients: recipients,
+		}
+		// Only set optional fields if they have values, to avoid overwriting existing
+		// values with empty strings.
+		if !configModel.ConfigID.IsNull() && configModel.ConfigID.ValueString() != "" {
+			config.ConfigID = configModel.ConfigID.ValueString()
+		}
+		if !configModel.PluginID.IsNull() && configModel.PluginID.ValueString() != "" {
+			config.PluginID = configModel.PluginID.ValueString()
+		}
+		if !configModel.Severity.IsNull() && configModel.Severity.ValueString() != "" {
+			config.Severity = configModel.Severity.ValueString()
+		}
+
+		notif := &models.CorrelationrulesapiPatchRuleNotificationsV1{
+			Type:   n.Type.ValueString(),
+			Config: config,
+		}
+
+		// Extract options map if present
+		if !n.Options.IsNull() && !n.Options.IsUnknown() {
+			options := make(map[string]string)
+			diags.Append(n.Options.ElementsAs(ctx, &options, false)...)
+			if diags.HasError() {
+				return nil, diags
+			}
+			notif.Options = options
+		}
+
+		notifications = append(notifications, notif)
+	}
+
+	return notifications, diags
 }
 
 // wrapAPIResponse maps the API response to the Terraform model.
@@ -985,7 +1352,7 @@ func (r *correlationRuleResource) wrapAPIResponse(
 			Outcome:        types.StringPointerValue(rule.Search.Outcome),
 			TriggerMode:    types.StringPointerValue(rule.Search.TriggerMode),
 			ExecutionMode:  types.StringPointerValue(rule.Search.ExecutionMode),
-			UseIngestTime:  types.BoolPointerValue(rule.Search.UseIngestTime),
+			UseIngestTime:  types.BoolValue(rule.Search.UseIngestTime != nil && *rule.Search.UseIngestTime),
 			CaseTemplateID: types.StringValue(rule.Search.CaseTemplateID),
 		}
 		searchObj, d := types.ObjectValueFrom(ctx, searchModel.AttributeTypes(), searchModel)
@@ -1060,5 +1427,96 @@ func (r *correlationRuleResource) wrapAPIResponse(
 		model.MitreAttack = types.ListNull(types.ObjectType{AttrTypes: MitreAttackModel{}.AttributeTypes()})
 	}
 
+	// Map notifications
+	notifList, d := r.mapNotificationsFromAPI(ctx, rule.Notifications)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	model.Notification = notifList
+
+	// Map guardrail notifications
+	guardrailNotifList, d := r.mapNotificationsFromAPI(ctx, rule.GuardrailNotifications)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	model.GuardrailNotification = guardrailNotifList
+
 	return diags
+}
+
+// mapNotificationsFromAPI converts API notification response to Terraform list.
+func (r *correlationRuleResource) mapNotificationsFromAPI(
+	ctx context.Context,
+	apiNotifications []*models.CorrelationrulesapiRuleNotificationsV1,
+) (types.List, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if len(apiNotifications) == 0 {
+		return types.ListNull(types.ObjectType{AttrTypes: NotificationModel{}.AttributeTypes()}), diags
+	}
+
+	notifModels := make([]NotificationModel, 0, len(apiNotifications))
+	for _, n := range apiNotifications {
+		if n == nil || n.Config == nil {
+			continue
+		}
+
+		// Build recipients list
+		recipients, d := types.ListValueFrom(ctx, types.StringType, n.Config.Recipients)
+		diags.Append(d...)
+		if diags.HasError() {
+			return types.ListNull(types.ObjectType{AttrTypes: NotificationModel{}.AttributeTypes()}), diags
+		}
+
+		configModel := NotificationConfigModel{
+			Cid:        types.StringPointerValue(n.Config.Cid),
+			Recipients: recipients,
+		}
+		// Handle optional fields - keep null if not set
+		if n.Config.ConfigID != nil && *n.Config.ConfigID != "" {
+			configModel.ConfigID = types.StringPointerValue(n.Config.ConfigID)
+		} else {
+			configModel.ConfigID = types.StringNull()
+		}
+		if n.Config.PluginID != nil && *n.Config.PluginID != "" {
+			configModel.PluginID = types.StringPointerValue(n.Config.PluginID)
+		} else {
+			configModel.PluginID = types.StringNull()
+		}
+		if n.Config.Severity != nil && *n.Config.Severity != "" {
+			configModel.Severity = types.StringPointerValue(n.Config.Severity)
+		} else {
+			configModel.Severity = types.StringNull()
+		}
+		configObj, d := types.ObjectValueFrom(ctx, configModel.AttributeTypes(), configModel)
+		diags.Append(d...)
+		if diags.HasError() {
+			return types.ListNull(types.ObjectType{AttrTypes: NotificationModel{}.AttributeTypes()}), diags
+		}
+
+		// Build options map
+		var optionsMap types.Map
+		if len(n.Options) > 0 {
+			optionsMap, d = types.MapValueFrom(ctx, types.StringType, n.Options)
+			diags.Append(d...)
+			if diags.HasError() {
+				return types.ListNull(types.ObjectType{AttrTypes: NotificationModel{}.AttributeTypes()}), diags
+			}
+		} else {
+			optionsMap = types.MapNull(types.StringType)
+		}
+
+		notifModel := NotificationModel{
+			Type:    types.StringPointerValue(n.Type),
+			Config:  configObj,
+			Options: optionsMap,
+		}
+		notifModels = append(notifModels, notifModel)
+	}
+
+	notifList, d := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: NotificationModel{}.AttributeTypes()}, notifModels)
+	diags.Append(d...)
+	return notifList, diags
 }
