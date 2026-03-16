@@ -354,12 +354,24 @@ func (r *correlationRuleResource) Schema(
 							),
 						},
 					},
-					// TODO: Find something, anything, on this!
 					"case_template_id": schema.StringAttribute{
 						Optional:            true,
 						Computed:            true,
 						Default:             stringdefault.StaticString(""),
-						MarkdownDescription: "The ID of the case template to use when creating incidents.",
+						MarkdownDescription: "The ID of the case template used to generate a case when the rule triggers. If not set, no case template is used. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.",
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.RequiresReplaceIf(
+								func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+									// The API omits empty strings (omitempty), so clearing case_template_id
+									// via PATCH is not possible. Force replace when removing a set value.
+									if req.StateValue.ValueString() != "" && req.PlanValue.ValueString() == "" {
+										resp.RequiresReplace = true
+									}
+								},
+								"Requires replacement when clearing case_template_id due to an API limitation.",
+								"Requires replacement when clearing `case_template_id` due to an API limitation.",
+							),
+						},
 					},
 				},
 			},
