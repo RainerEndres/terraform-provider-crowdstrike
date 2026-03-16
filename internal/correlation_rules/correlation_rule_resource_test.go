@@ -502,3 +502,339 @@ resource "crowdstrike_correlation_rule" "test" {
 }
 `, rName, startOn, acctest.CustomerID())
 }
+
+func TestAccCorrelationRuleResource_WithComment(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCorrelationRuleConfigWithComment(rName, "initial comment"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"comment",
+						"initial comment",
+					),
+				),
+			},
+			// Update comment
+			{
+				Config: testAccCorrelationRuleConfigWithComment(rName, "updated comment"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"comment",
+						"updated comment",
+					),
+				),
+			},
+		},
+	})
+}
+
+func TestAccCorrelationRuleResource_WithStopOn(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	// stop_on must be in the future
+	stopOn := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCorrelationRuleConfigWithStopOn(rName, stopOn),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"name",
+						rName,
+					),
+					resource.TestCheckResourceAttrSet(
+						"crowdstrike_correlation_rule.test",
+						"operation.stop_on",
+					),
+				),
+			},
+			{
+				ResourceName:            "crowdstrike_correlation_rule.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"trigger_on_create"},
+			},
+		},
+	})
+}
+
+func TestAccCorrelationRuleResource_WithUseIngestTime(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			// Create with use_ingest_time = true
+			{
+				Config: testAccCorrelationRuleConfigWithUseIngestTime(rName, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"search.use_ingest_time",
+						"true",
+					),
+				),
+			},
+			{
+				ResourceName:            "crowdstrike_correlation_rule.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"trigger_on_create"},
+			},
+		},
+	})
+}
+
+func TestAccCorrelationRuleResource_UpdateMitreAttack(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			// Create with no MITRE ATT&CK
+			{
+				Config: testAccCorrelationRuleConfig(rName, 50, "inactive"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.#",
+						"0",
+					),
+				),
+			},
+			// Add one MITRE ATT&CK entry
+			{
+				Config: testAccCorrelationRuleConfigWithMitreAttackUpdatable(rName, []mitreEntry{
+					{tacticID: "TA0001", techniqueID: "T1078"},
+				}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.#",
+						"1",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.0.tactic_id",
+						"TA0001",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.0.technique_id",
+						"T1078",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"tactic",
+						"TA0001",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"technique",
+						"T1078",
+					),
+				),
+			},
+			// Add a second MITRE ATT&CK entry
+			{
+				Config: testAccCorrelationRuleConfigWithMitreAttackUpdatable(rName, []mitreEntry{
+					{tacticID: "TA0001", techniqueID: "T1078"},
+					{tacticID: "TA0004", techniqueID: "T1548"},
+				}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.#",
+						"2",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.1.tactic_id",
+						"TA0004",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.1.technique_id",
+						"T1548",
+					),
+				),
+			},
+			// Remove all MITRE ATT&CK entries
+			{
+				Config: testAccCorrelationRuleConfig(rName, 50, "inactive"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.#",
+						"0",
+					),
+				),
+			},
+		},
+	})
+}
+
+func TestAccCorrelationRuleResource_StatusTransition(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			// Create as inactive
+			{
+				Config: testAccCorrelationRuleConfig(rName, 50, "inactive"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"status",
+						"inactive",
+					),
+				),
+			},
+			// Transition to active
+			{
+				Config: testAccCorrelationRuleConfig(rName, 50, "active"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"status",
+						"active",
+					),
+				),
+			},
+			// Transition back to inactive
+			{
+				Config: testAccCorrelationRuleConfig(rName, 50, "inactive"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"status",
+						"inactive",
+					),
+				),
+			},
+		},
+	})
+}
+
+type mitreEntry struct {
+	tacticID    string
+	techniqueID string
+}
+
+func testAccCorrelationRuleConfigWithComment(rName, comment string) string {
+	return acctest.ProviderConfig + fmt.Sprintf(`
+resource "crowdstrike_correlation_rule" "test" {
+  name        = %[1]q
+  customer_id = %[3]q
+  comment     = %[2]q
+  severity    = 50
+  status      = "inactive"
+
+  search {
+    filter       = "#repo=\"base_sensor\" #event_simpleName=ProcessRollup2"
+    lookback     = "1h0m"
+    outcome      = "detection"
+    trigger_mode = "verbose"
+  }
+
+  operation {
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+}
+`, rName, comment, acctest.CustomerID())
+}
+
+func testAccCorrelationRuleConfigWithStopOn(rName, stopOn string) string {
+	return acctest.ProviderConfig + fmt.Sprintf(`
+resource "crowdstrike_correlation_rule" "test" {
+  name        = %[1]q
+  customer_id = %[3]q
+  severity    = 50
+  status      = "inactive"
+
+  search {
+    filter       = "#repo=\"base_sensor\" #event_simpleName=ProcessRollup2"
+    lookback     = "1h0m"
+    outcome      = "detection"
+    trigger_mode = "verbose"
+  }
+
+  operation {
+    stop_on = %[2]q
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+}
+`, rName, stopOn, acctest.CustomerID())
+}
+
+func testAccCorrelationRuleConfigWithUseIngestTime(rName string, useIngestTime bool) string {
+	return acctest.ProviderConfig + fmt.Sprintf(`
+resource "crowdstrike_correlation_rule" "test" {
+  name        = %[1]q
+  customer_id = %[3]q
+  severity    = 50
+  status      = "inactive"
+
+  search {
+    filter          = "#Vendor=\"aws\" #event.module=\"cloudtrail\" event.action=\"AttachUserPolicy\""
+    lookback        = "1h0m"
+    outcome         = "detection"
+    trigger_mode    = "verbose"
+    use_ingest_time = %[2]t
+  }
+
+  operation {
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+}
+`, rName, useIngestTime, acctest.CustomerID())
+}
+
+func testAccCorrelationRuleConfigWithMitreAttackUpdatable(rName string, entries []mitreEntry) string {
+	mitreBlocks := ""
+	for _, e := range entries {
+		mitreBlocks += fmt.Sprintf(`
+  mitre_attack {
+    tactic_id    = %q
+    technique_id = %q
+  }
+`, e.tacticID, e.techniqueID)
+	}
+	return acctest.ProviderConfig + fmt.Sprintf(`
+resource "crowdstrike_correlation_rule" "test" {
+  name        = %[1]q
+  customer_id = %[3]q
+  severity    = 50
+  status      = "inactive"
+
+  search {
+    filter       = "#repo=\"base_sensor\" #event_simpleName=ProcessRollup2"
+    lookback     = "1h0m"
+    outcome      = "detection"
+    trigger_mode = "verbose"
+  }
+
+  operation {
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+%[2]s}
+`, rName, mitreBlocks, acctest.CustomerID())
+}

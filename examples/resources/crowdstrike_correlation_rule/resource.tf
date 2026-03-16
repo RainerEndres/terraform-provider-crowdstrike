@@ -57,3 +57,36 @@ resource "crowdstrike_correlation_rule" "advanced_rule" {
     technique_id = "T1098.003"
   }
 }
+
+# Correlation rule with notifications
+resource "crowdstrike_correlation_rule" "rule_with_notification" {
+  name        = "tf-example-rule-with-notification"
+  customer_id = "your-customer-id" # The CID of the environment (tenant ID)
+  description = "Rule with email notification"
+  severity    = 70 # High
+  status      = "inactive"
+
+  search {
+    filter       = "#repo=\"base_sensor\" #event_simpleName=ProcessRollup2"
+    lookback     = "1h0m"
+    outcome      = "detection"
+    trigger_mode = "verbose"
+  }
+
+  operation {
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+
+  notification {
+    type = "email"
+    config {
+      cid        = "your-customer-id"
+      config_id  = "your-config-id"
+      plugin_id  = "your-plugin-id"
+      recipients = ["security-team@example.com"]
+      severity   = "high"
+    }
+  }
+}
