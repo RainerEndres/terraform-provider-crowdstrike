@@ -74,6 +74,60 @@ const hclTemplate = `resource "crowdstrike_correlation_rule" "{{.ResourceName}}"
 {{- end}}
   }
 {{- end}}
+{{- range .Rule.Notifications}}
+  notification {
+    type = {{quote .Type}}
+{{- if .Options}}
+    options = {
+{{- range $k, $v := .Options}}
+      {{quote $k}} = {{quote $v}}
+{{- end}}
+    }
+{{- end}}
+    config {
+      cid        = {{quote .Config.Cid}}
+{{- if .Config.ConfigID}}
+      config_id  = {{quote .Config.ConfigID}}
+{{- end}}
+{{- if .Config.PluginID}}
+      plugin_id  = {{quote .Config.PluginID}}
+{{- end}}
+{{- if .Config.Recipients}}
+      recipients = [{{range $i, $r := .Config.Recipients}}{{if $i}}, {{end}}{{quote $r}}{{end}}]
+{{- end}}
+{{- if .Config.Severity}}
+      severity   = {{quote .Config.Severity}}
+{{- end}}
+    }
+  }
+{{- end}}
+{{- range .Rule.GuardrailNotifications}}
+  guardrail_notification {
+    type = {{quote .Type}}
+{{- if .Options}}
+    options = {
+{{- range $k, $v := .Options}}
+      {{quote $k}} = {{quote $v}}
+{{- end}}
+    }
+{{- end}}
+    config {
+      cid        = {{quote .Config.Cid}}
+{{- if .Config.ConfigID}}
+      config_id  = {{quote .Config.ConfigID}}
+{{- end}}
+{{- if .Config.PluginID}}
+      plugin_id  = {{quote .Config.PluginID}}
+{{- end}}
+{{- if .Config.Recipients}}
+      recipients = [{{range $i, $r := .Config.Recipients}}{{if $i}}, {{end}}{{quote $r}}{{end}}]
+{{- end}}
+{{- if .Config.Severity}}
+      severity   = {{quote .Config.Severity}}
+{{- end}}
+    }
+  }
+{{- end}}
 }
 `
 
@@ -96,16 +150,18 @@ type ruleData struct {
 
 // ruleView is a simplified view of the rule for templating
 type ruleView struct {
-	ID          string
-	Name        string
-	CustomerID  string
-	Description string
-	Severity    int32
-	Status      string
-	Comment     string
-	Search      *searchView
-	Operation   *operationView
-	MitreAttack []*mitreAttackView
+	ID                     string
+	Name                   string
+	CustomerID             string
+	Description            string
+	Severity               int32
+	Status                 string
+	Comment                string
+	Search                 *searchView
+	Operation              *operationView
+	MitreAttack            []*mitreAttackView
+	Notifications          []*notificationView
+	GuardrailNotifications []*notificationView
 }
 
 type searchView struct {
@@ -130,6 +186,20 @@ type scheduleView struct {
 type mitreAttackView struct {
 	TacticID    string
 	TechniqueID string
+}
+
+type notificationView struct {
+	Type    string
+	Options map[string]string
+	Config  *notificationConfigView
+}
+
+type notificationConfigView struct {
+	Cid        string
+	ConfigID   string
+	PluginID   string
+	Recipients []string
+	Severity   string
 }
 
 func main() {
@@ -389,5 +459,41 @@ func toRuleView(rule *models.CorrelationrulesapiRuleV1) *ruleView {
 		view.MitreAttack = append(view.MitreAttack, ma)
 	}
 
+	view.Notifications = toNotificationViews(rule.Notifications)
+	view.GuardrailNotifications = toNotificationViews(rule.GuardrailNotifications)
+
 	return view
+}
+
+func toNotificationViews(notifications []*models.CorrelationrulesapiRuleNotificationsV1) []*notificationView {
+	var views []*notificationView
+	for _, n := range notifications {
+		if n == nil {
+			continue
+		}
+		nv := &notificationView{
+			Options: n.Options,
+		}
+		if n.Type != nil {
+			nv.Type = *n.Type
+		}
+		if n.Config != nil {
+			nv.Config = &notificationConfigView{}
+			if n.Config.Cid != nil {
+				nv.Config.Cid = *n.Config.Cid
+			}
+			if n.Config.ConfigID != nil {
+				nv.Config.ConfigID = *n.Config.ConfigID
+			}
+			if n.Config.PluginID != nil {
+				nv.Config.PluginID = *n.Config.PluginID
+			}
+			if n.Config.Severity != nil {
+				nv.Config.Severity = *n.Config.Severity
+			}
+			nv.Config.Recipients = n.Config.Recipients
+		}
+		views = append(views, nv)
+	}
+	return views
 }
