@@ -2,6 +2,7 @@ package correlationrules_test
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
@@ -147,6 +148,41 @@ func TestAccCorrelationRuleResource_ClearDescription(t *testing.T) {
 						"",
 					),
 				),
+			},
+		},
+	})
+}
+
+// Make sure template_id can only be set by the backend through import.
+func TestAccCorrelationRuleResource_TemplateIDReadOnly(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: acctest.ProviderConfig + fmt.Sprintf(`
+resource "crowdstrike_correlation_rule" "test" {
+  name        = %[1]q
+  customer_id = %[2]q
+  severity    = 50
+  status      = "inactive"
+  template_id = "some-template-id"
+
+  search {
+    filter       = "#repo=\"base_sensor\" #event_simpleName=ProcessRollup2"
+    lookback     = "1h0m"
+    outcome      = "detection"
+    trigger_mode = "verbose"
+  }
+
+  operation {
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+}
+`, rName, acctest.CustomerID()),
+				ExpectError: regexp.MustCompile(`template_id`),
 			},
 		},
 	})
