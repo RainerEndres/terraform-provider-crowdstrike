@@ -17,10 +17,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/crowdstrike/gofalcon/falcon"
 	"github.com/crowdstrike/gofalcon/falcon/client"
@@ -29,15 +31,16 @@ import (
 )
 
 const hclTemplate = `resource "crowdstrike_correlation_rule" "{{.ResourceName}}" {
-  name        = {{quote .Rule.Name}}
-  customer_id = {{quote .Rule.CustomerID}}
+  name              = {{quote .Rule.Name}}
+  customer_id       = {{quote .Rule.CustomerID}}
 {{- if .Rule.Description}}
-  description = {{quote .Rule.Description}}
+  description       = {{quote .Rule.Description}}
 {{- end}}
-  severity    = {{.Rule.Severity}}
-  status      = {{quote .Rule.Status}}
+  severity          = {{.Rule.Severity}}
+  status            = {{quote .Rule.Status}}
+  trigger_on_create = false
 {{- if .Rule.Comment}}
-  comment     = {{quote .Rule.Comment}}
+  comment           = {{quote .Rule.Comment}}
 {{- end}}
 
   search {
@@ -45,6 +48,9 @@ const hclTemplate = `resource "crowdstrike_correlation_rule" "{{.ResourceName}}"
     lookback     = {{quote .Rule.Search.Lookback}}
     outcome      = {{quote .Rule.Search.Outcome}}
     trigger_mode = {{quote .Rule.Search.TriggerMode}}
+{{- if ne .Rule.Search.ExecutionMode "scheduled"}}
+    execution_mode = {{quote .Rule.Search.ExecutionMode}}
+{{- end}}
 {{- if .Rule.Search.UseIngestTime}}
     use_ingest_time = {{.Rule.Search.UseIngestTime}}
 {{- end}}
@@ -52,6 +58,7 @@ const hclTemplate = `resource "crowdstrike_correlation_rule" "{{.ResourceName}}"
     case_template_id = {{quote .Rule.Search.CaseTemplateID}}
 {{- end}}
   }
+{{- if .Rule.Operation.HasContent}}
 
   operation {
 {{- if .Rule.Operation.Schedule}}
@@ -66,6 +73,7 @@ const hclTemplate = `resource "crowdstrike_correlation_rule" "{{.ResourceName}}"
     stop_on = {{quote .Rule.Operation.StopOn}}
 {{- end}}
   }
+{{- end}}
 {{range .Rule.MitreAttack}}
   mitre_attack {
     tactic_id    = {{quote .TacticID}}
@@ -143,6 +151,12 @@ set -e
 
 `
 
+// heredocSentinel is the delimiter used for HCL heredoc strings.  Chosen to be
+// unlikely to appear in CQL filter queries.
+const heredocSentinel = "CROWDSTRIKE_HEREDOC"
+
+var resourceNameRegexp = regexp.MustCompile(`[^a-z0-9]+`)
+
 type ruleData struct {
 	ResourceName string
 	Rule         *ruleView
@@ -169,6 +183,7 @@ type searchView struct {
 	Lookback       string
 	Outcome        string
 	TriggerMode    string
+	ExecutionMode  string
 	UseIngestTime  bool
 	CaseTemplateID string
 }
@@ -177,6 +192,11 @@ type operationView struct {
 	Schedule *scheduleView
 	StartOn  string
 	StopOn   string
+}
+
+// HasContent returns true if the operation block has any fields to render.
+func (o *operationView) HasContent() bool {
+	return o.Schedule != nil || o.StartOn != "" || o.StopOn != ""
 }
 
 type scheduleView struct {
@@ -210,8 +230,7 @@ func main() {
 	cloud := os.Getenv("FALCON_CLOUD")
 
 	if clientID == "" || clientSecret == "" {
-		fmt.Fprintln(os.Stderr, "FALCON_CLIENT_ID and FALCON_CLIENT_SECRET environment variables are required")
-		os.Exit(1)
+		log.Fatal("FALCON_CLIENT_ID and FALCON_CLIENT_SECRET environment variables are required")
 	}
 
 	if cloud == "" {
@@ -220,8 +239,7 @@ func main() {
 
 	falconCloud, err := falcon.CloudValidate(cloud)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid FALCON_CLOUD: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Invalid FALCON_CLOUD: %v", err)
 	}
 
 	apiClient, err := falcon.NewClient(&falcon.ApiConfig{
@@ -231,21 +249,18 @@ func main() {
 		Context:      ctx,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create API client: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to create API client: %v", err)
 	}
 
 	rules, err := fetchAllRules(ctx, apiClient)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to fetch rules: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to fetch rules: %v", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "Found %d correlation rules\n", len(rules))
 
 	if err := generateFiles(rules); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to generate files: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to generate files: %v", err)
 	}
 }
 
@@ -281,28 +296,7 @@ func fetchAllRules(ctx context.Context, apiClient *client.CrowdStrikeAPISpecific
 
 func generateFiles(rules []*models.CorrelationrulesapiRuleV1) error {
 	funcMap := template.FuncMap{
-		"quote": func(s any) string {
-			var str string
-			switch v := s.(type) {
-			case string:
-				str = v
-			case *string:
-				if v == nil {
-					return `""`
-				}
-				str = *v
-			default:
-				return `""`
-			}
-			// Escape backslashes and quotes for HCL
-			str = strings.ReplaceAll(str, `\`, `\\`)
-			str = strings.ReplaceAll(str, `"`, `\"`)
-			// Handle multiline strings
-			if strings.Contains(str, "\n") {
-				return fmt.Sprintf("<<-EOT\n%s\nEOT", strings.ReplaceAll(str, `\"`, `"`))
-			}
-			return fmt.Sprintf(`"%s"`, str)
-		},
+		"quote": quoteHCL,
 	}
 
 	tpl, err := template.New("hcl").Funcs(funcMap).Parse(hclTemplate)
@@ -334,16 +328,23 @@ func generateFiles(rules []*models.CorrelationrulesapiRuleV1) error {
 		return fmt.Errorf("failed to write import script header: %w", err)
 	}
 
+	seenNames := make(map[string]int)
+
 	for _, rule := range rules {
-		resourceName := toResourceName(rule.Name)
+		resourceName := uniqueResourceName(rule.Name, seenNames)
 		data := ruleData{
 			ResourceName: resourceName,
 			Rule:         toRuleView(rule),
 		}
 
+		ruleID := "<unknown>"
+		if rule.ID != nil {
+			ruleID = *rule.ID
+		}
+
 		// Write HCL resource
 		if err := tpl.Execute(hclFile, data); err != nil {
-			return fmt.Errorf("failed to execute template for rule %s: %w", *rule.ID, err)
+			return fmt.Errorf("failed to execute template for rule %s: %w", ruleID, err)
 		}
 		if _, err := hclFile.WriteString("\n"); err != nil {
 			return fmt.Errorf("failed to write newline: %w", err)
@@ -351,7 +352,7 @@ func generateFiles(rules []*models.CorrelationrulesapiRuleV1) error {
 
 		// Write import command
 		importCmd := fmt.Sprintf("terraform import crowdstrike_correlation_rule.%s %s\n",
-			resourceName, *rule.ID)
+			resourceName, ruleID)
 		if _, err := importFile.WriteString(importCmd); err != nil {
 			return fmt.Errorf("failed to write import command: %w", err)
 		}
@@ -363,6 +364,49 @@ func generateFiles(rules []*models.CorrelationrulesapiRuleV1) error {
 	return nil
 }
 
+// quoteHCL formats a value for use in HCL. Multiline strings use heredoc
+// syntax (literal, no escape processing). Single-line strings use quoted
+// syntax with backslash and quote escaping.
+func quoteHCL(s any) string {
+	var str string
+	switch v := s.(type) {
+	case string:
+		str = v
+	case *string:
+		if v == nil {
+			return `""`
+		}
+		str = *v
+	default:
+		return `""`
+	}
+
+	// Multiline → heredoc (literal, no escaping needed)
+	if strings.Contains(str, "\n") {
+		str = strings.TrimRight(str, "\n")
+		return fmt.Sprintf("<<%s\n%s\n%s", heredocSentinel, str, heredocSentinel)
+	}
+
+	// Single-line → quoted string (must escape backslashes and quotes)
+	str = strings.ReplaceAll(str, `\`, `\\`)
+	str = strings.ReplaceAll(str, `"`, `\"`)
+	return fmt.Sprintf(`"%s"`, str)
+}
+
+// uniqueResourceName converts a rule name to a valid Terraform resource name
+// and appends a numeric suffix on collision.
+func uniqueResourceName(name *string, seen map[string]int) string {
+	base := toResourceName(name)
+
+	count := seen[base]
+	seen[base] = count + 1
+
+	if count == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s_%d", base, count)
+}
+
 func toResourceName(name *string) string {
 	if name == nil {
 		return "unnamed"
@@ -370,8 +414,7 @@ func toResourceName(name *string) string {
 
 	// Convert to lowercase and replace non-alphanumeric with underscores
 	s := strings.ToLower(*name)
-	reg := regexp.MustCompile(`[^a-z0-9]+`)
-	s = reg.ReplaceAllString(s, "_")
+	s = resourceNameRegexp.ReplaceAllString(s, "_")
 
 	// Remove leading/trailing underscores
 	s = strings.Trim(s, "_")
@@ -392,6 +435,7 @@ func toRuleView(rule *models.CorrelationrulesapiRuleV1) *ruleView {
 	view := &ruleView{
 		Description: rule.Description,
 		Comment:     rule.Comment,
+		Operation:   &operationView{}, // always initialized to avoid nil panics in template
 	}
 
 	if rule.ID != nil {
@@ -413,6 +457,7 @@ func toRuleView(rule *models.CorrelationrulesapiRuleV1) *ruleView {
 	if rule.Search != nil {
 		view.Search = &searchView{
 			CaseTemplateID: rule.Search.CaseTemplateID,
+			ExecutionMode:  "scheduled", // default
 		}
 		if rule.Search.Filter != nil {
 			view.Search.Filter = *rule.Search.Filter
@@ -425,6 +470,11 @@ func toRuleView(rule *models.CorrelationrulesapiRuleV1) *ruleView {
 		}
 		if rule.Search.TriggerMode != nil {
 			view.Search.TriggerMode = *rule.Search.TriggerMode
+		} else {
+			view.Search.TriggerMode = "verbose" // safe default when API omits it
+		}
+		if rule.Search.ExecutionMode != nil {
+			view.Search.ExecutionMode = *rule.Search.ExecutionMode
 		}
 		if rule.Search.UseIngestTime != nil {
 			view.Search.UseIngestTime = *rule.Search.UseIngestTime
@@ -432,17 +482,16 @@ func toRuleView(rule *models.CorrelationrulesapiRuleV1) *ruleView {
 	}
 
 	if rule.Operation != nil {
-		view.Operation = &operationView{}
 		if rule.Operation.Schedule != nil && rule.Operation.Schedule.Definition != nil {
 			view.Operation.Schedule = &scheduleView{
 				Definition: *rule.Operation.Schedule.Definition,
 			}
 		}
 		if !rule.Operation.StartOn.IsZero() {
-			view.Operation.StartOn = rule.Operation.StartOn.String()
+			view.Operation.StartOn = time.Time(rule.Operation.StartOn).Format(time.RFC3339)
 		}
 		if !rule.Operation.StopOn.IsZero() {
-			view.Operation.StopOn = rule.Operation.StopOn.String()
+			view.Operation.StopOn = time.Time(rule.Operation.StopOn).Format(time.RFC3339)
 		}
 	}
 
