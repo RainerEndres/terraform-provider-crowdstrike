@@ -56,7 +56,7 @@ func TestAccCorrelationRuleResource_Basic(t *testing.T) {
 				ResourceName:            "crowdstrike_correlation_rule.test",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"trigger_on_create"},
+				ImportStateVerifyIgnore: []string{},
 			},
 			// Update with new severity
 			{
@@ -632,7 +632,7 @@ func TestAccCorrelationRuleResource_WithStopOn(t *testing.T) {
 				ResourceName:            "crowdstrike_correlation_rule.test",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"trigger_on_create"},
+				ImportStateVerifyIgnore: []string{},
 			},
 		},
 	})
@@ -659,7 +659,7 @@ func TestAccCorrelationRuleResource_WithUseIngestTime(t *testing.T) {
 				ResourceName:            "crowdstrike_correlation_rule.test",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"trigger_on_create"},
+				ImportStateVerifyIgnore: []string{},
 			},
 		},
 	})

@@ -324,15 +324,10 @@ func (r *correlationRuleResource) Schema(
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			// Write-only: only meaningful at creation time. We don't read it from the API.
 			"trigger_on_create": schema.BoolAttribute{
 				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Whether to trigger the rule immediately upon creation.",
-				PlanModifiers: []planmodifier.Bool{
-					boolplanmodifier.UseStateForUnknown(),
-				},
+				WriteOnly:           true,
+				MarkdownDescription: "Whether to trigger the rule immediately upon creation. Write-only; not stored in state.",
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -1414,8 +1409,6 @@ func (r *correlationRuleResource) wrapAPIResponse(
 	if rule.TemplateID != nil {
 		model.TemplateID = types.StringValue(*rule.TemplateID)
 	}
-	// TriggerOnCreate is write-only, so we keep the plan value
-	// model.TriggerOnCreate remains unchanged
 
 	if rule.Search != nil {
 		searchModel := SearchModel{
