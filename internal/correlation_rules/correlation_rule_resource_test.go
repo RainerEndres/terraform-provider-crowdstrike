@@ -683,6 +683,73 @@ func TestAccCorrelationRuleResource_UpdateMitreAttack(t *testing.T) {
 	})
 }
 
+// TestAccCorrelationRuleResource_UpdatePreservesMitreAttack verifies that
+// updating an unrelated field (severity) does not wipe mitre_attack entries.
+// The gofalcon PATCH model serialises MitreAttack without omitempty, so a nil
+// slice becomes JSON null.  This test ensures the API treats null as "no
+// change" rather than "clear all".
+func TestAccCorrelationRuleResource_UpdatePreservesMitreAttack(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			// Create with mitre_attack and severity 50
+			{
+				Config: testAccCorrelationRuleConfigWithMitreAttackAndSeverity(rName, 50),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"severity",
+						"50",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.#",
+						"1",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.0.tactic_id",
+						"TA0004",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.0.technique_id",
+						"T1068",
+					),
+				),
+			},
+			// Update only severity — mitre_attack must survive
+			{
+				Config: testAccCorrelationRuleConfigWithMitreAttackAndSeverity(rName, 70),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"severity",
+						"70",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.#",
+						"1",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.0.tactic_id",
+						"TA0004",
+					),
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"mitre_attack.0.technique_id",
+						"T1068",
+					),
+				),
+			},
+		},
+	})
+}
+
 func TestAccCorrelationRuleResource_StatusTransition(t *testing.T) {
 	rName := acctest.RandomResourceName()
 	resource.ParallelTest(t, resource.TestCase{
@@ -804,6 +871,35 @@ resource "crowdstrike_correlation_rule" "test" {
   }
 }
 `, rName, useIngestTime, acctest.CustomerID())
+}
+
+func testAccCorrelationRuleConfigWithMitreAttackAndSeverity(rName string, severity int) string {
+	return acctest.ProviderConfig + fmt.Sprintf(`
+resource "crowdstrike_correlation_rule" "test" {
+  name        = %[1]q
+  customer_id = %[3]q
+  severity    = %[2]d
+  status      = "inactive"
+
+  search {
+    filter       = "#event.kind=\"alert\" #event.module=\"falcon\""
+    lookback     = "1h0m"
+    outcome      = "detection"
+    trigger_mode = "verbose"
+  }
+
+  operation {
+    schedule {
+      definition = "@every 1h0m"
+    }
+  }
+
+  mitre_attack {
+    tactic_id    = "TA0004"
+    technique_id = "T1068"
+  }
+}
+`, rName, severity, acctest.CustomerID())
 }
 
 func testAccCorrelationRuleConfigWithMitreAttackUpdatable(rName string, entries []mitreEntry) string {
