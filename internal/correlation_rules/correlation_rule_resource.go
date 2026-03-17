@@ -252,7 +252,21 @@ func (r *correlationRuleResource) Schema(
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "Description of the correlation rule. Optional.",
+				MarkdownDescription: "Description of the correlation rule. Optional. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplaceIf(
+						func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							// The PATCH model uses omitempty, so an empty string is
+							// never sent to the API.  Force replace when clearing a
+							// previously set value.
+							if req.StateValue.ValueString() != "" && req.PlanValue.ValueString() == "" {
+								resp.RequiresReplace = true
+							}
+						},
+						"Requires replacement when clearing description due to an API limitation.",
+						"Requires replacement when clearing `description` due to an API limitation.",
+					),
+				},
 			},
 			"severity": schema.Int32Attribute{
 				Required:            true,
@@ -272,7 +286,21 @@ func (r *correlationRuleResource) Schema(
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "A comment.",
+				MarkdownDescription: "A comment. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplaceIf(
+						func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							// The PATCH model uses omitempty, so an empty string is
+							// never sent to the API.  Force replace when clearing a
+							// previously set value.
+							if req.StateValue.ValueString() != "" && req.PlanValue.ValueString() == "" {
+								resp.RequiresReplace = true
+							}
+						},
+						"Requires replacement when clearing comment due to an API limitation.",
+						"Requires replacement when clearing `comment` due to an API limitation.",
+					),
+				},
 			},
 			"tactic": schema.StringAttribute{
 				Computed:            true,
