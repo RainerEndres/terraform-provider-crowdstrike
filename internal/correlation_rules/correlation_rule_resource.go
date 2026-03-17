@@ -70,6 +70,7 @@ type CorrelationRuleResourceModel struct {
 	Comment               types.String `tfsdk:"comment"`
 	Tactic                types.String `tfsdk:"tactic"`
 	Technique             types.String `tfsdk:"technique"`
+	TemplateID            types.String `tfsdk:"template_id"`
 	TriggerOnCreate       types.Bool   `tfsdk:"trigger_on_create"`
 	Search                types.Object `tfsdk:"search"`
 	Operation             types.Object `tfsdk:"operation"`
@@ -309,6 +310,13 @@ func (r *correlationRuleResource) Schema(
 			"technique": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "The MITRE ATT&CK technique ID. Derived from the first mitre_attack entry.",
+			},
+			"template_id": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "The ID of the template this rule was created from, if any. Read-only; only populated on import and read.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			// Write-only: only meaningful at creation time. We don't read it from the API.
 			"trigger_on_create": schema.BoolAttribute{
@@ -1381,6 +1389,9 @@ func (r *correlationRuleResource) wrapAPIResponse(
 	}
 	if rule.Technique != nil {
 		model.Technique = types.StringValue(*rule.Technique)
+	}
+	if rule.TemplateID != nil {
+		model.TemplateID = types.StringValue(*rule.TemplateID)
 	}
 	// TriggerOnCreate is write-only, so we keep the plan value
 	// model.TriggerOnCreate remains unchanged
