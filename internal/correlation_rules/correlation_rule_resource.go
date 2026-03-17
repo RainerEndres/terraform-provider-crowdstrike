@@ -306,10 +306,16 @@ func (r *correlationRuleResource) Schema(
 			"tactic": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "The MITRE ATT&CK tactic ID. Derived from the first mitre_attack entry.",
+				PlanModifiers: []planmodifier.String{
+					useStateUnlessMitreChanged{},
+				},
 			},
 			"technique": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "The MITRE ATT&CK technique ID. Derived from the first mitre_attack entry.",
+				PlanModifiers: []planmodifier.String{
+					useStateUnlessMitreChanged{},
+				},
 			},
 			"template_id": schema.StringAttribute{
 				Computed:            true,
@@ -459,7 +465,6 @@ func (r *correlationRuleResource) Schema(
 			},
 			"mitre_attack": schema.ListNestedBlock{
 				MarkdownDescription: "MITRE ATT&CK mappings for the rule.",
-				Validators:          []validator.List{},
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"tactic_id": schema.StringAttribute{
@@ -1217,6 +1222,14 @@ func (r *correlationRuleResource) buildCreateNotifications(
 
 	notifications := make([]*models.CorrelationrulesapiCreateRuleNotifications, 0, len(notifModels))
 	for _, n := range notifModels {
+		if n.Config.IsNull() || n.Config.IsUnknown() {
+			diags.AddError(
+				"Missing notification config",
+				"Each notification block requires a config sub-block.",
+			)
+			return nil, diags
+		}
+
 		// Extract config block
 		var configModel NotificationConfigModel
 		diags.Append(n.Config.As(ctx, &configModel, basetypes.ObjectAsOptions{})...)
@@ -1299,6 +1312,14 @@ func (r *correlationRuleResource) buildPatchNotifications(
 
 	notifications := make([]*models.CorrelationrulesapiPatchRuleNotificationsV1, 0, len(notifModels))
 	for _, n := range notifModels {
+		if n.Config.IsNull() || n.Config.IsUnknown() {
+			diags.AddError(
+				"Missing notification config",
+				"Each notification block requires a config sub-block.",
+			)
+			return nil, diags
+		}
+
 		// Extract config block
 		var configModel NotificationConfigModel
 		diags.Append(n.Config.As(ctx, &configModel, basetypes.ObjectAsOptions{})...)
