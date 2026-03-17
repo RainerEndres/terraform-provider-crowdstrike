@@ -117,6 +117,41 @@ func TestAccCorrelationRuleResource_WithDescription(t *testing.T) {
 	})
 }
 
+// TestAccCorrelationRuleResource_ClearDescription verifies that removing a
+// description triggers a destroy/recreate, because the PATCH model uses
+// omitempty on Description and an empty string is never sent to the API.
+func TestAccCorrelationRuleResource_ClearDescription(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		PreCheck:                 func() { acctest.PreCheck(t, acctest.RequireCustomerID) },
+		Steps: []resource.TestStep{
+			// Create with a description
+			{
+				Config: testAccCorrelationRuleConfigUpdatable(rName, "will be removed", 50, "1h0m", "verbose"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"description",
+						"will be removed",
+					),
+				),
+			},
+			// Clear the description — should succeed via replace
+			{
+				Config: testAccCorrelationRuleConfig(rName, 50, "inactive"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"crowdstrike_correlation_rule.test",
+						"description",
+						"",
+					),
+				),
+			},
+		},
+	})
+}
+
 func TestAccCorrelationRuleResource_WithMitreAttack(t *testing.T) {
 	rName := acctest.RandomResourceName()
 	resource.ParallelTest(t, resource.TestCase{
