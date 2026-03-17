@@ -36,9 +36,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = &correlationRuleResource{}
-	_ resource.ResourceWithConfigure   = &correlationRuleResource{}
-	_ resource.ResourceWithImportState = &correlationRuleResource{}
+	_ resource.Resource                   = &correlationRuleResource{}
+	_ resource.ResourceWithConfigure      = &correlationRuleResource{}
+	_ resource.ResourceWithImportState    = &correlationRuleResource{}
+	_ resource.ResourceWithValidateConfig = &correlationRuleResource{}
 )
 
 var apiScopes = []scopes.Scope{
@@ -589,12 +590,6 @@ func (r *correlationRuleResource) Create(
 		return
 	}
 
-	// Validate start_on is at least 15 minutes in the future if specified
-	resp.Diagnostics.Append(r.validateStartOn(ctx, plan.Operation)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	createReq, diags := r.buildCreateRequest(ctx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -623,6 +618,15 @@ func (r *correlationRuleResource) Create(
 
 	rule := res.Payload.Resources[0]
 
+	// Set ID in state immediately so Terraform can track the resource even if
+	// subsequent operations (like waitForStatus) fail.
+	if rule.ID != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), *rule.ID)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	// Poll until status transitions from "creating" to expected status
 	if rule.ID != nil {
 		expectedStatus := plan.Status.ValueString()
@@ -636,7 +640,7 @@ func (r *correlationRuleResource) Create(
 		}
 	}
 
-	resp.Diagnostics.Append(r.wrapAPIResponse(ctx, &plan, rule, rule.ID)...)
+	resp.Diagnostics.Append(plan.wrap(ctx, rule, rule.ID)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -682,7 +686,7 @@ func (r *correlationRuleResource) Read(
 	}
 
 	rule := res.Payload.Resources[0]
-	resp.Diagnostics.Append(r.wrapAPIResponse(ctx, &state, rule, nil)...)
+	resp.Diagnostics.Append(state.wrap(ctx, rule, nil)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -746,7 +750,7 @@ func (r *correlationRuleResource) Update(
 		return
 	}
 
-	resp.Diagnostics.Append(r.wrapAPIResponse(ctx, &plan, rule, nil)...)
+	resp.Diagnostics.Append(plan.wrap(ctx, rule, nil)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -786,37 +790,40 @@ func (r *correlationRuleResource) ImportState(
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// validateStartOn checks that start_on is at least 15 minutes in the future if specified.
-// This validation only runs on create since existing rules may have start times in the past.
-func (r *correlationRuleResource) validateStartOn(
+func (r *correlationRuleResource) ValidateConfig(
 	ctx context.Context,
-	operationObj types.Object,
-) diag.Diagnostics {
-	var diags diag.Diagnostics
+	req resource.ValidateConfigRequest,
+	resp *resource.ValidateConfigResponse,
+) {
+	var data CorrelationRuleResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-	if operationObj.IsNull() || operationObj.IsUnknown() {
-		return diags
+	if data.Operation.IsNull() || data.Operation.IsUnknown() {
+		return
 	}
 
 	var opModel OperationModel
-	diags.Append(operationObj.As(ctx, &opModel, basetypes.ObjectAsOptions{})...)
-	if diags.HasError() {
-		return diags
+	resp.Diagnostics.Append(data.Operation.As(ctx, &opModel, basetypes.ObjectAsOptions{})...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	if opModel.StartOn.IsNull() || opModel.StartOn.IsUnknown() {
-		return diags
+		return
 	}
 
 	startOnTime, d := opModel.StartOn.ValueRFC3339Time()
 	if d.HasError() {
-		diags.Append(d...)
-		return diags
+		resp.Diagnostics.Append(d...)
+		return
 	}
 
 	minStartTime := time.Now().Add(15 * time.Minute)
 	if startOnTime.Before(minStartTime) {
-		diags.AddAttributeError(
+		resp.Diagnostics.AddAttributeError(
 			path.Root("operation").AtName("start_on"),
 			"Invalid start_on time",
 			fmt.Sprintf("start_on must be at least 15 minutes in the future. Provided: %s, minimum allowed: %s",
@@ -825,8 +832,6 @@ func (r *correlationRuleResource) validateStartOn(
 			),
 		)
 	}
-
-	return diags
 }
 
 // waitForStatus polls the API until the rule reaches the expected status or times out.
@@ -1372,10 +1377,9 @@ func (r *correlationRuleResource) buildPatchNotifications(
 	return notifications, diags
 }
 
-// wrapAPIResponse maps the API response to the Terraform model.
-func (r *correlationRuleResource) wrapAPIResponse(
+// wrap transforms API response values to their Terraform model values.
+func (model *CorrelationRuleResourceModel) wrap(
 	ctx context.Context,
-	model *CorrelationRuleResourceModel,
 	rule *models.CorrelationrulesapiRuleV1,
 	id *string,
 ) diag.Diagnostics {
@@ -1493,7 +1497,7 @@ func (r *correlationRuleResource) wrapAPIResponse(
 	}
 
 	// Map notifications
-	notifList, d := r.mapNotificationsFromAPI(ctx, rule.Notifications)
+	notifList, d := mapNotificationsFromAPI(ctx, rule.Notifications)
 	diags.Append(d...)
 	if diags.HasError() {
 		return diags
@@ -1501,7 +1505,7 @@ func (r *correlationRuleResource) wrapAPIResponse(
 	model.Notification = notifList
 
 	// Map guardrail notifications
-	guardrailNotifList, d := r.mapNotificationsFromAPI(ctx, rule.GuardrailNotifications)
+	guardrailNotifList, d := mapNotificationsFromAPI(ctx, rule.GuardrailNotifications)
 	diags.Append(d...)
 	if diags.HasError() {
 		return diags
@@ -1512,7 +1516,7 @@ func (r *correlationRuleResource) wrapAPIResponse(
 }
 
 // mapNotificationsFromAPI converts API notification response to Terraform list.
-func (r *correlationRuleResource) mapNotificationsFromAPI(
+func mapNotificationsFromAPI(
 	ctx context.Context,
 	apiNotifications []*models.CorrelationrulesapiRuleNotificationsV1,
 ) (types.List, diag.Diagnostics) {

@@ -379,6 +379,23 @@ func TestAccCorrelationRuleResource_UpdateFields(t *testing.T) {
 	})
 }
 
+// TestAccCorrelationRuleResource_StartOnInPastRejected verifies that
+// ValidateConfig rejects a start_on time that is not 15 minutes in the future.
+func TestAccCorrelationRuleResource_StartOnInPastRejected(t *testing.T) {
+	rName := acctest.RandomResourceName()
+	pastTime := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccCorrelationRuleConfigWithStartOn(rName, pastTime),
+				ExpectError: regexp.MustCompile(`Invalid start_on time`),
+			},
+		},
+	})
+}
+
 func TestAccCorrelationRuleResource_WithStartOn(t *testing.T) {
 	rName := acctest.RandomResourceName()
 	// start_on must be at least 15 minutes in the future
