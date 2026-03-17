@@ -14,7 +14,7 @@ resource "crowdstrike_correlation_rule" "basic_rule" {
   name        = "tf-example-basic-rule"
   customer_id = "your-customer-id" # The CID of the environment (tenant ID)
   severity    = 50                 # Medium
-  status      = "inactive"
+  status      = "inactive"         # All examples are set to "inactive" to ensure that accidental deployments don't cause issues.
 
   search {
     filter       = "#repo=\"base_sensor\" #event_simpleName=ProcessRollup2"
@@ -90,3 +90,4 @@ resource "crowdstrike_correlation_rule" "rule_with_notification" {
     }
   }
 }
+
