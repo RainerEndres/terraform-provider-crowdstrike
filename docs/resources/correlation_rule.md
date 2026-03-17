@@ -19,6 +19,19 @@ The following API scopes are required:
 - Correlation Rules | Read & Write
 
 
+## Notes
+There are two issues that are important to note:
+- The `trigger_on_create` attribute is write-only. It is sent to the API during creation but never stored in state and can't be retrieved from the API.
+- Several fields (`description`, `comment`, `case_template_id`, `use_ingest_time`, `stop_on`) cannot be cleared or set to false, once set. Removing these values requires the resource to be destroyed and recreated. Each affected field documents this in its description. This is due to limitations of the gofalcon library.
+
+The combination of these behaviours entail, that when `trigger_on_create` is set and a rule must be recreated, the rule might be triggered unintentionally.
+
+Further details of note:
+- The `tactic` and `technique` attributes are derived from the first `mitre_attack` entry and are read-only.
+- The `template_id` attribute is read-only and populated on import/read. It cannot be set in configuration.
+- Use the `crowdstrike_correlation_rules` data source to query existing rules.
+
+
 ## Example Usage
 
 ```terraform
@@ -245,3 +258,12 @@ Optional:
 - `case_template_id` (String) The ID of the case template used to generate a case when the rule triggers. If not set, no case template is used. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.
 - `execution_mode` (String) The execution mode for the rule. Currently only `scheduled` is supported. Defaults to `scheduled`. **Note:** Changes to this field require the resource to be destroyed and recreated.
 - `use_ingest_time` (Boolean) If true, use the timestamp of the moment the event was ingested by crowdstrike cloud. Otherwise use the moment the event was generated on the system. **Note:** Due to an API limitation, changing this value from `true` to `false` requires the resource to be destroyed and recreated.
+
+## Import
+
+Import is supported using the following syntax:
+
+```shell
+# A correlation rule can be imported by specifying the rule ID.
+terraform import crowdstrike_correlation_rule.example 85ae98xxxxxxd9a8f2
+```
