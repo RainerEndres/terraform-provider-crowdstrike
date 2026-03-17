@@ -128,20 +128,21 @@ resource "crowdstrike_correlation_rule" "rule_with_notification" {
 
 ### Optional
 
-- `comment` (String) A comment.
-- `description` (String) Description of the correlation rule. Optional.
+- `comment` (String) A comment. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.
+- `description` (String) Description of the correlation rule. Optional. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.
 - `guardrail_notification` (Block List) Guardrail notification configurations for the rule. Guardrail notifications are sent when guardrail conditions are met. (see [below for nested schema](#nestedblock--guardrail_notification))
 - `mitre_attack` (Block List) MITRE ATT&CK mappings for the rule. (see [below for nested schema](#nestedblock--mitre_attack))
 - `notification` (Block List) Notification configurations for the rule. Notifications are sent when the rule triggers. (see [below for nested schema](#nestedblock--notification))
 - `operation` (Block, Optional) The operation configuration that defines scheduling and timing for the rule. (see [below for nested schema](#nestedblock--operation))
 - `search` (Block, Optional) The search configuration that defines the rule's detection logic. (see [below for nested schema](#nestedblock--search))
-- `trigger_on_create` (Boolean) Whether to trigger the rule immediately upon creation.
+- `trigger_on_create` (Boolean) Whether to trigger the rule immediately upon creation. Write-only; not stored in state.
 
 ### Read-Only
 
 - `id` (String) Unique identifier of the correlation rule. Computed.
 - `tactic` (String) The MITRE ATT&CK tactic ID. Derived from the first mitre_attack entry.
 - `technique` (String) The MITRE ATT&CK technique ID. Derived from the first mitre_attack entry.
+- `template_id` (String) The ID of the template this rule was created from, if any. Read-only; only populated on import and read.
 
 <a id="nestedblock--guardrail_notification"></a>
 ### Nested Schema for `guardrail_notification`
@@ -241,6 +242,6 @@ Required:
 
 Optional:
 
-- `case_template_id` (String) The ID of the case template to use when creating incidents.
+- `case_template_id` (String) The ID of the case template used to generate a case when the rule triggers. If not set, no case template is used. **Note:** Due to an API limitation, removing this value once set requires the resource to be destroyed and recreated.
 - `execution_mode` (String) The execution mode for the rule. Currently only `scheduled` is supported. Defaults to `scheduled`. **Note:** Changes to this field require the resource to be destroyed and recreated.
 - `use_ingest_time` (Boolean) If true, use the timestamp of the moment the event was ingested by crowdstrike cloud. Otherwise use the moment the event was generated on the system. **Note:** Due to an API limitation, changing this value from `true` to `false` requires the resource to be destroyed and recreated.
