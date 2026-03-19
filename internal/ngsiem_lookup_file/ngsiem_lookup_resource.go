@@ -17,6 +17,7 @@ import (
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/utils"
 	"github.com/go-openapi/runtime"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -239,6 +240,31 @@ func newNamedReader(name string, data []byte) runtime.NamedReadCloser {
 	}
 }
 
+// wrap transforms API response values to their terraform model values.
+func (d *ngsiemlookupResourceModel) wrap(
+	id string,
+	fileContent []byte,
+) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	repository, filename, err := parseResourceID(id)
+	if err != nil {
+		diags.AddError("Invalid Resource ID", err.Error())
+		return diags
+	}
+
+	d.ID = types.StringValue(id)
+	d.Filename = types.StringValue(filename)
+	d.Repository = types.StringValue(repository)
+
+	if fileContent != nil {
+		hash := sha256.Sum256(fileContent)
+		d.ContentSHA256 = types.StringValue(hex.EncodeToString(hash[:]))
+	}
+
+	return diags
+}
+
 func buildResourceID(repository, filename string) string {
 	return repository + ":" + filename
 }
@@ -330,9 +356,12 @@ func (r *ngsiemlookupResource) Read(
 		return
 	}
 
+	var fileContent []byte
+
 	if state.IgnoreServersideChanges.ValueBool() {
 		tflog.Debug(ctx, "Checking NGSIEM lookup file existence (skipping content download)")
-		filter := fmt.Sprintf("name:'%s'", filename)
+		// We only got matching to work with the :~ operator.
+		filter := fmt.Sprintf("name:~'%s'", filename)
 		listParams := &ngsiem.ListLookupFilesParams{
 			Context:      ctx,
 			Filter:       &filter,
@@ -360,22 +389,23 @@ func (r *ngsiemlookupResource) Read(
 			op.Reader = reader
 		})
 		if err != nil {
-			diag := tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesReadWrite)
-			if diag.Summary() == tferrors.NotFoundErrorSummary {
+			d := tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesReadWrite)
+			if d.Summary() == tferrors.NotFoundErrorSummary {
 				resp.Diagnostics.Append(tferrors.NewResourceNotFoundWarningDiagnostic())
 				resp.State.RemoveResource(ctx)
 				return
 			}
-			resp.Diagnostics.Append(diag)
+			resp.Diagnostics.Append(d)
 			return
 		}
 
-		hash := sha256.Sum256(reader.buf.Bytes())
-		state.ContentSHA256 = types.StringValue(hex.EncodeToString(hash[:]))
+		fileContent = reader.buf.Bytes()
 	}
 
-	state.Filename = types.StringValue(filename)
-	state.Repository = types.StringValue(repository)
+	resp.Diagnostics.Append(state.wrap(state.ID.ValueString(), fileContent)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	tflog.Info(ctx, "Successfully read NGSIEM lookup file", map[string]any{
 		"filename":   filename,
