@@ -108,7 +108,7 @@ func TestAccNGSIEMLookupFileResource_jsonFile(t *testing.T) {
 	})
 }
 
-func TestAccNGSIEMLookupFileResource_ignoreServersideChanges(t *testing.T) {
+func TestAccNGSIEMLookupFileResource_assumeUnchanged(t *testing.T) {
 	rName := acctest.RandomResourceName()
 	filename := rName + ".csv"
 	resourceName := "crowdstrike_ngsiem_lookup_file.test"
@@ -120,10 +120,10 @@ func TestAccNGSIEMLookupFileResource_ignoreServersideChanges(t *testing.T) {
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccNGSIEMLookupConfig_ignoreServerside(filename, csvContent),
+				Config: testAccNGSIEMLookupConfig_assumeUnchanged(filename, csvContent),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("id"), knownvalue.NotNull()),
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("ignore_serverside_changes"), knownvalue.Bool(true)),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("assume_unchanged"), knownvalue.Bool(true)),
 				},
 			},
 		},
@@ -188,14 +188,14 @@ resource "crowdstrike_ngsiem_lookup_file" "test" {
 `
 }
 
-func testAccNGSIEMLookupConfig_ignoreServerside(filename, content string) string {
+func testAccNGSIEMLookupConfig_assumeUnchanged(filename, content string) string {
 	return fmt.Sprintf(`
 resource "crowdstrike_ngsiem_lookup_file" "test" {
   filename                  = %[1]q
   repository                = "all"
   content                   = %[2]q
   content_sha256            = %[3]q
-  ignore_serverside_changes = true
+  assume_unchanged          = true
 }
 `, filename, content, sha256Hex(content))
 }

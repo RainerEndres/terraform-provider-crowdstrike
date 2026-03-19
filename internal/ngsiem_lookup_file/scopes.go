@@ -11,3 +11,10 @@ var apiScopesReadWrite = []scopes.Scope{
 		Write: true,
 	},
 }
+
+var apiScopesRead = []scopes.Scope{
+	{
+		Name: "NGSIEM",
+		Read: true,
+	},
+}

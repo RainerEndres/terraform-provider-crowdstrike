@@ -13,7 +13,7 @@ provider "crowdstrike" {
   cloud = "us-2"
 }
 
-variable "ignore_serverside_changes" {
+variable "assume_unchanged" {
   description = "Skip downloading the file during state refresh. When true, Terraform will not detect out-of-band changes made to the file on the server."
   type        = bool
   default     = false
@@ -25,18 +25,18 @@ data "local_file" "network_hosts" {
 }
 
 resource "crowdstrike_ngsiem_lookup_file" "csv_example" {
-  filename                  = "network_hosts.csv"
-  repository                = "all"
-  content                   = data.local_file.network_hosts.content
-  content_sha256            = data.local_file.network_hosts.content_sha256
-  ignore_serverside_changes = var.ignore_serverside_changes
+  filename         = "network_hosts.csv"
+  repository       = "all"
+  content          = data.local_file.network_hosts.content
+  content_sha256   = data.local_file.network_hosts.content_sha256
+  assume_unchanged = var.assume_unchanged
 }
 
 # Upload a JSON lookup file using the file() function
 resource "crowdstrike_ngsiem_lookup_file" "json_example" {
-  filename                  = "user_enrichment.json"
-  repository                = "investigate_view"
-  content                   = file("${path.module}/data/user_enrichment.json")
-  content_sha256            = filesha256("${path.module}/data/user_enrichment.json")
-  ignore_serverside_changes = var.ignore_serverside_changes
+  filename         = "user_enrichment.json"
+  repository       = "investigate_view"
+  content          = file("${path.module}/data/user_enrichment.json")
+  content_sha256   = filesha256("${path.module}/data/user_enrichment.json")
+  assume_unchanged = var.assume_unchanged
 }

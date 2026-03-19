@@ -44,12 +44,12 @@ type ngsiemlookupResource struct {
 }
 
 type ngsiemlookupResourceModel struct {
-	ID                      types.String `tfsdk:"id"`
-	Filename                types.String `tfsdk:"filename"`
-	Repository              types.String `tfsdk:"repository"`
-	Content                 types.String `tfsdk:"content"`
-	ContentSHA256           types.String `tfsdk:"content_sha256"`
-	IgnoreServersideChanges types.Bool   `tfsdk:"ignore_serverside_changes"`
+	ID              types.String `tfsdk:"id"`
+	Filename        types.String `tfsdk:"filename"`
+	Repository      types.String `tfsdk:"repository"`
+	Content         types.String `tfsdk:"content"`
+	ContentSHA256   types.String `tfsdk:"content_sha256"`
+	AssumeUnchanged types.Bool   `tfsdk:"assume_unchanged"`
 }
 
 func (r *ngsiemlookupResource) Configure(
@@ -124,17 +124,7 @@ func (r *ngsiemlookupResource) Schema(
 				Required:    true,
 				Description: "The repository to upload the file to. Valid values include: `all`, `search-all`, `investigate_view`, `falcon`, `third-party`, `falcon_for_it_view`, `forensics_view`, `forensics`, `3pi_parsers`.",
 				Validators: []validator.String{
-					stringvalidator.OneOf(
-						"all",
-						"search-all",
-						"investigate_view",
-						"falcon",
-						"third-party",
-						"falcon_for_it_view",
-						"forensics_view",
-						"forensics",
-						"3pi_parsers",
-					),
+					stringvalidator.OneOf(validRepositories...),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -149,12 +139,24 @@ func (r *ngsiemlookupResource) Schema(
 				Required:    true,
 				Description: "SHA256 checksum of the file content. Use `filesha256()` or `sha256()` to compute it. Changes to this value trigger an update.",
 			},
-			"ignore_serverside_changes": schema.BoolAttribute{
+			"assume_unchanged": schema.BoolAttribute{
 				Optional:    true,
 				Description: "If set to `true`, Terraform will not download the file during state refresh and will not detect out-of-band changes made to the file on the server. **NOTE**: Skipping the download entails that there is no way for terraform to detect if the file has been changed on serverside. If you do this, do not rely on terraform for integrity checks.",
 			},
 		},
 	}
+}
+
+var validRepositories = []string{
+	"all",
+	"search-all",
+	"investigate_view",
+	"falcon",
+	"third-party",
+	"falcon_for_it_view",
+	"forensics_view",
+	"forensics",
+	"3pi_parsers",
 }
 
 var reservedPrefixes = []string{"aid_", "cs_lookups_", "cs_", "ffc_", "platform_"}
@@ -358,7 +360,7 @@ func (r *ngsiemlookupResource) Read(
 
 	var fileContent []byte
 
-	if state.IgnoreServersideChanges.ValueBool() {
+	if state.AssumeUnchanged.ValueBool() {
 		tflog.Debug(ctx, "Checking NGSIEM lookup file existence (skipping content download)")
 		// We only got matching to work with the :~ operator.
 		filter := fmt.Sprintf("name:~'%s'", filename)
