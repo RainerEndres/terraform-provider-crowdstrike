@@ -27,7 +27,8 @@ resource "crowdstrike_ngsiem_lookup_file" "csv_example" {
 
 # Upload a JSON lookup file using the file() function
 resource "crowdstrike_ngsiem_lookup_file" "json_example" {
-  filename   = "user_enrichment.json"
-  repository = "investigate_view"
-  content    = file("${path.module}/data/user_enrichment.json")
+  filename       = "user_enrichment.json"
+  repository     = "investigate_view"
+  content        = file("${path.module}/data/user_enrichment.json")
+  content_sha256 = filesha256("${path.module}/data/user_enrichment.json")
 }

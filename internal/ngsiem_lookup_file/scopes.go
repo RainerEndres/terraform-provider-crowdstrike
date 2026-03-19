@@ -1,4 +1,4 @@
-package ngsiemookup
+package lookupfile
 
 import (
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/scopes"

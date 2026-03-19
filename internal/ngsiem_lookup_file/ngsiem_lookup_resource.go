@@ -1,9 +1,12 @@
-package ngsiemookup
+package lookupfile
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/crowdstrike/gofalcon/falcon/client"
@@ -25,9 +28,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = &ngsiemlookupResource{}
-	_ resource.ResourceWithConfigure   = &ngsiemlookupResource{}
-	_ resource.ResourceWithImportState = &ngsiemlookupResource{}
+	_ resource.Resource                   = &ngsiemlookupResource{}
+	_ resource.ResourceWithConfigure      = &ngsiemlookupResource{}
+	_ resource.ResourceWithImportState    = &ngsiemlookupResource{}
+	_ resource.ResourceWithValidateConfig = &ngsiemlookupResource{}
 )
 
 func NewNGSIEMLookupFileResource() resource.Resource {
@@ -39,12 +43,12 @@ type ngsiemlookupResource struct {
 }
 
 type ngsiemlookupResourceModel struct {
-	ID            types.String `tfsdk:"id"`
-	Filename      types.String `tfsdk:"filename"`
-	Repository    types.String `tfsdk:"repository"`
-	Content       types.String `tfsdk:"content"`
-	ContentSHA256 types.String `tfsdk:"content_sha256"`
-	LastUpdated   types.String `tfsdk:"last_updated"`
+	ID                      types.String `tfsdk:"id"`
+	Filename                types.String `tfsdk:"filename"`
+	Repository              types.String `tfsdk:"repository"`
+	Content                 types.String `tfsdk:"content"`
+	ContentSHA256           types.String `tfsdk:"content_sha256"`
+	IgnoreServersideChanges types.Bool   `tfsdk:"ignore_serverside_changes"`
 }
 
 func (r *ngsiemlookupResource) Configure(
@@ -105,6 +109,11 @@ func (r *ngsiemlookupResource) Schema(
 				Description: "The name of the lookup file (e.g. `my_lookup.csv`). Must include a `.csv` or `.json` extension. File names must not use reserved prefixes: `aid_`, `cs_lookups_`, `cs_`, `ffc_`, `platform_`.",
 				Validators: []validator.String{
 					fwvalidators.StringNotWhitespace(),
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`\.(csv|json)$`),
+						"filename must end with `.csv` or `.json`",
+					),
+					filenameNoReservedPrefix(),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -132,18 +141,76 @@ func (r *ngsiemlookupResource) Schema(
 			},
 			"content": schema.StringAttribute{
 				Required:    true,
-				Sensitive:   true,
-				Description: "The content of the lookup file. Use the `file()` function to read from a local file, or reference a `local_file` data source.",
+				WriteOnly:   true,
+				Description: "The lookup file's content. This value is write-only and not stored in state.",
 			},
 			"content_sha256": schema.StringAttribute{
-				Optional:    true,
-				Description: "SHA256 checksum of the file content. Pass `data.local_file.<name>.content_sha256` to store it in state for reference.",
+				Required:    true,
+				Description: "SHA256 checksum of the file content. Use `filesha256()` or `sha256()` to compute it. Changes to this value trigger an update.",
 			},
-			"last_updated": schema.StringAttribute{
-				Computed:    true,
-				Description: "Timestamp of the last Terraform update.",
+			"ignore_serverside_changes": schema.BoolAttribute{
+				Optional:    true,
+				Description: "If set to `true`, Terraform will not download the file during state refresh and will not detect out-of-band changes made to the file on the server. **NOTE**: Skipping the download entails that there is no way for terraform to detect if the file has been changed on serverside. If you do this, do not rely on terraform for integrity checks.",
 			},
 		},
+	}
+}
+
+var reservedPrefixes = []string{"aid_", "cs_lookups_", "cs_", "ffc_", "platform_"}
+
+type reservedPrefixValidator struct{}
+
+func (v reservedPrefixValidator) Description(_ context.Context) string {
+	return "filename must not start with a reserved prefix (aid_, cs_lookups_, cs_, ffc_, platform_)"
+}
+
+func (v reservedPrefixValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v reservedPrefixValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	value := strings.ToLower(req.ConfigValue.ValueString())
+	for _, prefix := range reservedPrefixes {
+		if strings.HasPrefix(value, prefix) {
+			resp.Diagnostics.AddAttributeError(
+				req.Path,
+				"Reserved filename prefix",
+				fmt.Sprintf("Filename must not start with the reserved prefix %q.", prefix),
+			)
+			return
+		}
+	}
+}
+
+func filenameNoReservedPrefix() validator.String {
+	return reservedPrefixValidator{}
+}
+
+func (r *ngsiemlookupResource) ValidateConfig(
+	ctx context.Context,
+	req resource.ValidateConfigRequest,
+	resp *resource.ValidateConfigResponse,
+) {
+	var config ngsiemlookupResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !config.Content.IsUnknown() && !config.ContentSHA256.IsUnknown() {
+		hash := sha256.Sum256([]byte(config.Content.ValueString()))
+		computed := hex.EncodeToString(hash[:])
+		if config.ContentSHA256.ValueString() != computed {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("content_sha256"),
+				"Content SHA256 mismatch",
+				fmt.Sprintf("The provided content_sha256 %q does not match the SHA256 of the content %q.", config.ContentSHA256.ValueString(), computed),
+			)
+		}
 	}
 }
 
@@ -197,9 +264,15 @@ func (r *ngsiemlookupResource) Create(
 		return
 	}
 
+	var contentVal types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("content"), &contentVal)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	filename := plan.Filename.ValueString()
 	repository := plan.Repository.ValueString()
-	content := []byte(plan.Content.ValueString())
+	content := []byte(contentVal.ValueString())
 
 	params := &ngsiem.CreateLookupFileParams{
 		Context:      ctx,
@@ -225,14 +298,17 @@ func (r *ngsiemlookupResource) Create(
 	}
 
 	plan.ID = types.StringValue(buildResourceID(repository, filename))
-	plan.LastUpdated = utils.GenerateUpdateTimestamp()
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), plan.ID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	tflog.Info(ctx, "Successfully created NGSIEM lookup file", map[string]any{
 		"filename":   filename,
 		"repository": repository,
 	})
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ngsiemlookupResource) Read(
@@ -240,6 +316,8 @@ func (r *ngsiemlookupResource) Read(
 	req resource.ReadRequest,
 	resp *resource.ReadResponse,
 ) {
+	tflog.Trace(ctx, "Starting NGSIEM lookup file read")
+
 	var state ngsiemlookupResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -252,26 +330,57 @@ func (r *ngsiemlookupResource) Read(
 		return
 	}
 
-	params := &ngsiem.GetLookupFileParams{
-		Context:      ctx,
-		Filename:     &filename,
-		SearchDomain: &repository,
-	}
-
-	_, err = r.client.Ngsiem.GetLookupFile(params)
-	if err != nil {
-		diag := tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesReadWrite)
-		if diag.Summary() == tferrors.NotFoundErrorSummary {
+	if state.IgnoreServersideChanges.ValueBool() {
+		tflog.Debug(ctx, "Checking NGSIEM lookup file existence (skipping content download)")
+		filter := fmt.Sprintf("name:'%s'", filename)
+		listParams := &ngsiem.ListLookupFilesParams{
+			Context:      ctx,
+			Filter:       &filter,
+			SearchDomain: &repository,
+		}
+		listRes, err := r.client.Ngsiem.ListLookupFiles(listParams)
+		if err != nil {
+			resp.Diagnostics.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesReadWrite))
+			return
+		}
+		if listRes == nil || listRes.Payload == nil || len(listRes.Payload.Resources) == 0 {
 			resp.Diagnostics.Append(tferrors.NewResourceNotFoundWarningDiagnostic())
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.Append(diag)
-		return
+	} else {
+		tflog.Debug(ctx, "Downloading NGSIEM lookup file for drift detection")
+		params := &ngsiem.GetLookupFileParams{
+			Context:      ctx,
+			Filename:     &filename,
+			SearchDomain: &repository,
+		}
+		reader := &lookupFileReader{}
+		_, err = r.client.Ngsiem.GetLookupFile(params, func(op *runtime.ClientOperation) {
+			op.Reader = reader
+		})
+		if err != nil {
+			diag := tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesReadWrite)
+			if diag.Summary() == tferrors.NotFoundErrorSummary {
+				resp.Diagnostics.Append(tferrors.NewResourceNotFoundWarningDiagnostic())
+				resp.State.RemoveResource(ctx)
+				return
+			}
+			resp.Diagnostics.Append(diag)
+			return
+		}
+
+		hash := sha256.Sum256(reader.buf.Bytes())
+		state.ContentSHA256 = types.StringValue(hex.EncodeToString(hash[:]))
 	}
 
 	state.Filename = types.StringValue(filename)
 	state.Repository = types.StringValue(repository)
+
+	tflog.Info(ctx, "Successfully read NGSIEM lookup file", map[string]any{
+		"filename":   filename,
+		"repository": repository,
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -289,9 +398,15 @@ func (r *ngsiemlookupResource) Update(
 		return
 	}
 
+	var contentVal types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("content"), &contentVal)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	filename := plan.Filename.ValueString()
 	repository := plan.Repository.ValueString()
-	content := []byte(plan.Content.ValueString())
+	content := []byte(contentVal.ValueString())
 
 	params := &ngsiem.UpdateLookupFileParams{
 		Context:      ctx,
@@ -308,14 +423,13 @@ func (r *ngsiemlookupResource) Update(
 	}
 
 	plan.ID = types.StringValue(buildResourceID(repository, filename))
-	plan.LastUpdated = utils.GenerateUpdateTimestamp()
 
 	tflog.Info(ctx, "Successfully updated NGSIEM lookup file", map[string]any{
 		"filename":   filename,
 		"repository": repository,
 	})
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ngsiemlookupResource) Delete(
@@ -323,6 +437,8 @@ func (r *ngsiemlookupResource) Delete(
 	req resource.DeleteRequest,
 	resp *resource.DeleteResponse,
 ) {
+	tflog.Trace(ctx, "Starting NGSIEM lookup file delete")
+
 	var state ngsiemlookupResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {

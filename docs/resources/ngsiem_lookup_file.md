@@ -51,9 +51,10 @@ resource "crowdstrike_ngsiem_lookup_file" "csv_example" {
 
 # Upload a JSON lookup file using the file() function
 resource "crowdstrike_ngsiem_lookup_file" "json_example" {
-  filename   = "user_enrichment.json"
-  repository = "investigate_view"
-  content    = file("${path.module}/data/user_enrichment.json")
+  filename       = "user_enrichment.json"
+  repository     = "investigate_view"
+  content        = file("${path.module}/data/user_enrichment.json")
+  content_sha256 = filesha256("${path.module}/data/user_enrichment.json")
 }
 ```
 
@@ -62,18 +63,18 @@ resource "crowdstrike_ngsiem_lookup_file" "json_example" {
 
 ### Required
 
-- `content` (String, Sensitive) The content of the lookup file. Use the `file()` function to read from a local file, or reference a `local_file` data source.
+- `content` (String) The lookup file's content. This value is write-only and not stored in state.
+- `content_sha256` (String) SHA256 checksum of the file content. Use `filesha256()` or `sha256()` to compute it. Changes to this value trigger an update.
 - `filename` (String) The name of the lookup file (e.g. `my_lookup.csv`). Must include a `.csv` or `.json` extension. File names must not use reserved prefixes: `aid_`, `cs_lookups_`, `cs_`, `ffc_`, `platform_`.
 - `repository` (String) The repository to upload the file to. Valid values include: `all`, `search-all`, `investigate_view`, `falcon`, `third-party`, `falcon_for_it_view`, `forensics_view`, `forensics`, `3pi_parsers`.
 
 ### Optional
 
-- `content_sha256` (String) SHA256 checksum of the file content. Pass `data.local_file.<name>.content_sha256` to store it in state for reference.
+- `ignore_serverside_changes` (Boolean) If set to `true`, Terraform will not download the file during state refresh and will not detect out-of-band changes made to the file on the server. **NOTE**: Skipping the download entails that there is no way for terraform to detect if the file has been changed on serverside. If you do this, do not rely on terraform for integrity checks.
 
 ### Read-Only
 
 - `id` (String) The unique identifier of the lookup file in the format `repository:filename`.
-- `last_updated` (String) Timestamp of the last Terraform update.
 
 ## Import
 
