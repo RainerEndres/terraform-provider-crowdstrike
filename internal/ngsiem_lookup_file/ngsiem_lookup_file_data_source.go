@@ -52,7 +52,6 @@ type ngsiemlookupFileDataSourceModel struct {
 	LookupFiles types.List   `tfsdk:"lookup_files"`
 }
 
-// wrap transforms API response values to their terraform model values.
 func (d *ngsiemlookupFileDataSourceModel) wrap(
 	ctx context.Context,
 	filenames []string,

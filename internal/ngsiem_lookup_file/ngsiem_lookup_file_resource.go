@@ -371,7 +371,7 @@ func (r *ngsiemlookupResource) Read(
 		}
 		listRes, err := r.client.Ngsiem.ListLookupFiles(listParams)
 		if err != nil {
-			resp.Diagnostics.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesReadWrite))
+			resp.Diagnostics.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, apiScopesRead))
 			return
 		}
 		if listRes == nil || listRes.Payload == nil || len(listRes.Payload.Resources) == 0 {
