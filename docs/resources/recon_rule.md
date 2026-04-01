@@ -68,6 +68,7 @@ output "recon_rule" {
 - `breach_monitor_only` (Boolean) Whether to monitor only for breach data. Must be used with `breach_monitoring_enabled` set to `true`.
 - `breach_monitoring_enabled` (Boolean) Whether to monitor for breach data. Only available for `SA_DOMAIN` and `SA_EMAIL` rule topics.
 - `lookback_period` (Number) The duration (in days) for which the rule looks back in the past at first run.
+- `match_on_tsq_result_types` (Set of String) The result types to monitor for. Only available for the `SA_TYPOSQUATTING` rule topic.
 - `substring_matching_enabled` (Boolean) Whether to monitor for substring matches. Only available for the `SA_TYPOSQUATTING` rule topic.
 
 ### Read-Only

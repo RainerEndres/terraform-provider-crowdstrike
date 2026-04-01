@@ -25,8 +25,8 @@ func TestAccReconRuleResource_basic(t *testing.T) {
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("id"), knownvalue.NotNull()),
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("name"), knownvalue.StringExact(rName)),
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_ALIAS")),
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("filter"), knownvalue.StringExact("test-filter")),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_CVE")),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("filter"), knownvalue.StringExact("(phrase:'tf-acc-test')")),
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("priority"), knownvalue.StringExact("high")),
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("permissions"), knownvalue.StringExact("private")),
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("breach_monitoring_enabled"), knownvalue.Bool(false)),
@@ -68,8 +68,8 @@ func TestAccReconRuleResource_update(t *testing.T) {
 				Config: testAccReconRuleConfig_updated(rNameUpdated),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("name"), knownvalue.StringExact(rNameUpdated)),
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_ALIAS")),
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("filter"), knownvalue.StringExact("updated-filter")),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_CVE")),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("filter"), knownvalue.StringExact("(phrase:'tf-acc-updated')")),
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("priority"), knownvalue.StringExact("low")),
 					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("permissions"), knownvalue.StringExact("public")),
 				},
@@ -103,13 +103,13 @@ func TestAccReconRuleResource_topicRequiresReplace(t *testing.T) {
 			{
 				Config: testAccReconRuleConfig_basic(rName),
 				ConfigStateChecks: []statecheck.StateCheck{
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_ALIAS")),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_CVE")),
 				},
 			},
 			{
 				Config: testAccReconRuleConfig_differentTopic(rName),
 				ConfigStateChecks: []statecheck.StateCheck{
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_CUSTOM")),
+					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("topic"), knownvalue.StringExact("SA_AUTHOR")),
 				},
 			},
 		},
@@ -162,15 +162,15 @@ resource "crowdstrike_recon_rule" "test" {
 			name: "breach_monitor_only_without_breach_monitoring",
 			config: `
 resource "crowdstrike_recon_rule" "test" {
-  name                     = "test"
-  topic                    = "SA_ALIAS"
-  filter                   = "test"
-  priority                 = "high"
-  permissions              = "private"
-  breach_monitor_only      = true
+  name                      = "test"
+  topic                     = "SA_DOMAIN"
+  filter                    = "test"
+  priority                  = "high"
+  permissions               = "private"
+  breach_monitor_only       = true
   breach_monitoring_enabled = false
 }`,
-			expectError: regexp.MustCompile(`breach_monitor_only can only be set to true when breach_monitoring_enabled is also true`),
+			expectError: regexp.MustCompile(`breach_monitor_only can only be set to true when breach_monitoring_enabled`),
 		},
 		{
 			name: "empty_name",
@@ -196,6 +196,45 @@ resource "crowdstrike_recon_rule" "test" {
 }`,
 			expectError: regexp.MustCompile(`Attribute filter string length must be at least 1`),
 		},
+		{
+			name: "breach_monitoring_on_wrong_topic",
+			config: `
+resource "crowdstrike_recon_rule" "test" {
+  name                      = "test"
+  topic                     = "SA_ALIAS"
+  filter                    = "test"
+  priority                  = "high"
+  permissions               = "private"
+  breach_monitoring_enabled = true
+}`,
+			expectError: regexp.MustCompile(`breach_monitoring_enabled can only be set to true for SA_DOMAIN and SA_EMAIL`),
+		},
+		{
+			name: "substring_matching_on_wrong_topic",
+			config: `
+resource "crowdstrike_recon_rule" "test" {
+  name                       = "test"
+  topic                      = "SA_ALIAS"
+  filter                     = "test"
+  priority                   = "high"
+  permissions                = "private"
+  substring_matching_enabled = true
+}`,
+			expectError: regexp.MustCompile(`substring_matching_enabled can only be set to true for the SA_TYPOSQUATTING`),
+		},
+		{
+			name: "match_on_tsq_result_types_on_wrong_topic",
+			config: `
+resource "crowdstrike_recon_rule" "test" {
+  name                      = "test"
+  topic                     = "SA_ALIAS"
+  filter                    = "test"
+  priority                  = "high"
+  permissions               = "private"
+  match_on_tsq_result_types = ["basedomains"]
+}`,
+			expectError: regexp.MustCompile(`match_on_tsq_result_types can only be set for the SA_TYPOSQUATTING`),
+		},
 	}
 
 	for _, tc := range validationTests {
@@ -215,12 +254,14 @@ resource "crowdstrike_recon_rule" "test" {
 	}
 }
 
+// Filter syntax reference: FQL using `phrase` condition, derived from existing
+// rules retrieved via the Recon API.
 func testAccReconRuleConfig_basic(name string) string {
 	return fmt.Sprintf(`
 resource "crowdstrike_recon_rule" "test" {
   name        = %[1]q
-  topic       = "SA_ALIAS"
-  filter      = "test-filter"
+  topic       = "SA_CVE"
+  filter      = "(phrase:'tf-acc-test')"
   priority    = "high"
   permissions = "private"
 }`, name)
@@ -230,8 +271,8 @@ func testAccReconRuleConfig_updated(name string) string {
 	return fmt.Sprintf(`
 resource "crowdstrike_recon_rule" "test" {
   name        = %[1]q
-  topic       = "SA_ALIAS"
-  filter      = "updated-filter"
+  topic       = "SA_CVE"
+  filter      = "(phrase:'tf-acc-updated')"
   priority    = "low"
   permissions = "public"
 }`, name)
@@ -241,8 +282,8 @@ func testAccReconRuleConfig_differentTopic(name string) string {
 	return fmt.Sprintf(`
 resource "crowdstrike_recon_rule" "test" {
   name        = %[1]q
-  topic       = "SA_CUSTOM"
-  filter      = "test-filter"
+  topic       = "SA_AUTHOR"
+  filter      = "(phrase:'tf-acc-test')"
   priority    = "high"
   permissions = "private"
 }`, name)

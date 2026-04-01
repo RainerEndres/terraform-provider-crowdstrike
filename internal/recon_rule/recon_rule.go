@@ -3,14 +3,17 @@ package reconrule
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/crowdstrike/gofalcon/falcon/client"
 	"github.com/crowdstrike/gofalcon/falcon/client/recon"
 	"github.com/crowdstrike/gofalcon/falcon/models"
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/config"
+	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/framework/flex"
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/scopes"
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/tferrors"
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/utils"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -62,6 +65,7 @@ type reconRuleResourceModel struct {
 	BreachMonitoringEnabled  types.Bool   `tfsdk:"breach_monitoring_enabled"`
 	BreachMonitorOnly        types.Bool   `tfsdk:"breach_monitor_only"`
 	SubstringMatchingEnabled types.Bool   `tfsdk:"substring_matching_enabled"`
+	MatchOnTsqResultTypes    types.Set    `tfsdk:"match_on_tsq_result_types"`
 	LookbackPeriod           types.Int64  `tfsdk:"lookback_period"`
 	Status                   types.String `tfsdk:"status"`
 	StatusMessage            types.String `tfsdk:"status_message"`
@@ -70,7 +74,12 @@ type reconRuleResourceModel struct {
 	LastUpdated              types.String `tfsdk:"last_updated"`
 }
 
-func (m *reconRuleResourceModel) wrap(rule models.SadomainRule) {
+func (m *reconRuleResourceModel) wrap(
+	ctx context.Context,
+	rule models.SadomainRule,
+) diag.Diagnostics {
+	var diags diag.Diagnostics
+
 	m.ID = types.StringPointerValue(rule.ID)
 	m.Name = types.StringPointerValue(rule.Name)
 	m.Topic = types.StringPointerValue(rule.Topic)
@@ -84,12 +93,22 @@ func (m *reconRuleResourceModel) wrap(rule models.SadomainRule) {
 	m.Status = types.StringPointerValue(rule.Status)
 	m.StatusMessage = types.StringValue(rule.StatusMessage)
 
+	tsqSet, tsqDiags := flex.FlattenStringValueSet(ctx, rule.MatchOnTsqResultTypes)
+	diags.Append(tsqDiags...)
+	if diags.HasError() {
+		return diags
+	}
+
+	m.MatchOnTsqResultTypes = tsqSet
+
 	if rule.CreatedTimestamp != nil {
 		m.CreatedTimestamp = types.StringValue(rule.CreatedTimestamp.String())
 	}
 	if rule.UpdatedTimestamp != nil {
 		m.UpdatedTimestamp = types.StringValue(rule.UpdatedTimestamp.String())
 	}
+
+	return diags
 }
 
 func (r *reconRuleResource) Configure(
@@ -220,6 +239,18 @@ func (r *reconRuleResource) Schema(
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Whether to monitor for substring matches. Only available for the `SA_TYPOSQUATTING` rule topic.",
 			},
+			// Allowed values from SadomainCreateRuleRequestV1.MatchOnTsqResultTypes in gofalcon.
+			"match_on_tsq_result_types": schema.SetAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "The result types to monitor for. Only available for the `SA_TYPOSQUATTING` rule topic.",
+				ElementType:         types.StringType,
+				Validators: []validator.Set{
+					setvalidator.ValueStringsAre(
+						stringvalidator.OneOf("basedomains", "subdomains"),
+					),
+				},
+			},
 			"lookback_period": schema.Int64Attribute{
 				Optional:            true,
 				Computed:            true,
@@ -259,16 +290,57 @@ func (r *reconRuleResource) ValidateConfig(
 		return
 	}
 
-	if cfg.BreachMonitorOnly.IsUnknown() || cfg.BreachMonitoringEnabled.IsUnknown() || cfg.Topic.IsUnknown() {
+	if cfg.Topic.IsUnknown() {
 		return
 	}
 
-	if cfg.BreachMonitorOnly.ValueBool() && !cfg.BreachMonitoringEnabled.ValueBool() {
+	topic := cfg.Topic.ValueString()
+
+	if !cfg.BreachMonitorOnly.IsUnknown() && cfg.BreachMonitorOnly.ValueBool() &&
+		!cfg.BreachMonitoringEnabled.IsUnknown() && !cfg.BreachMonitoringEnabled.ValueBool() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("breach_monitor_only"),
 			"Invalid Configuration",
 			"breach_monitor_only can only be set to true when breach_monitoring_enabled is also true.",
 		)
+	}
+
+	// breach_monitoring_enabled and breach_monitor_only are only valid for SA_DOMAIN and SA_EMAIL.
+	if topic != "SA_DOMAIN" && topic != "SA_EMAIL" {
+		if !cfg.BreachMonitoringEnabled.IsUnknown() && cfg.BreachMonitoringEnabled.ValueBool() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("breach_monitoring_enabled"),
+				"Invalid Configuration",
+				"breach_monitoring_enabled can only be set to true for SA_DOMAIN and SA_EMAIL rule topics.",
+			)
+		}
+
+		if !cfg.BreachMonitorOnly.IsUnknown() && cfg.BreachMonitorOnly.ValueBool() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("breach_monitor_only"),
+				"Invalid Configuration",
+				"breach_monitor_only can only be set to true for SA_DOMAIN and SA_EMAIL rule topics.",
+			)
+		}
+	}
+
+	// substring_matching_enabled and match_on_tsq_result_types are only valid for SA_TYPOSQUATTING.
+	if topic != "SA_TYPOSQUATTING" {
+		if !cfg.SubstringMatchingEnabled.IsUnknown() && cfg.SubstringMatchingEnabled.ValueBool() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("substring_matching_enabled"),
+				"Invalid Configuration",
+				"substring_matching_enabled can only be set to true for the SA_TYPOSQUATTING rule topic.",
+			)
+		}
+
+		if !cfg.MatchOnTsqResultTypes.IsUnknown() && !cfg.MatchOnTsqResultTypes.IsNull() && len(cfg.MatchOnTsqResultTypes.Elements()) > 0 {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("match_on_tsq_result_types"),
+				"Invalid Configuration",
+				"match_on_tsq_result_types can only be set for the SA_TYPOSQUATTING rule topic.",
+			)
+		}
 	}
 }
 
@@ -298,6 +370,14 @@ func (r *reconRuleResource) Create(
 	substringMatchingEnabled := plan.SubstringMatchingEnabled.ValueBool()
 	originatingTemplateID := ""
 
+	matchOnTsqResultTypes := make([]string, 0)
+	if !plan.MatchOnTsqResultTypes.IsNull() && !plan.MatchOnTsqResultTypes.IsUnknown() {
+		resp.Diagnostics.Append(plan.MatchOnTsqResultTypes.ElementsAs(ctx, &matchOnTsqResultTypes, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	createReq := &models.SadomainCreateRuleRequestV1{
 		Name:                     &name,
 		Topic:                    &topic,
@@ -307,6 +387,7 @@ func (r *reconRuleResource) Create(
 		BreachMonitoringEnabled:  &breachMonitoringEnabled,
 		BreachMonitorOnly:        &breachMonitorOnly,
 		SubstringMatchingEnabled: &substringMatchingEnabled,
+		MatchOnTsqResultTypes:    matchOnTsqResultTypes,
 		LookbackPeriod:           plan.LookbackPeriod.ValueInt64(),
 		OriginatingTemplateID:    &originatingTemplateID,
 	}
@@ -322,7 +403,20 @@ func (r *reconRuleResource) Create(
 		return
 	}
 
-	if createResp == nil || createResp.Payload == nil || len(createResp.Payload.Resources) == 0 {
+	if createResp == nil || createResp.Payload == nil {
+		resp.Diagnostics.Append(tferrors.NewEmptyResponseError(tferrors.Create))
+		return
+	}
+
+	if len(createResp.Payload.Errors) > 0 {
+		resp.Diagnostics.AddError(
+			"Failed to create",
+			formatReconAPIErrors(createResp.Payload.Errors),
+		)
+		return
+	}
+
+	if len(createResp.Payload.Resources) == 0 {
 		resp.Diagnostics.Append(tferrors.NewEmptyResponseError(tferrors.Create))
 		return
 	}
@@ -334,7 +428,11 @@ func (r *reconRuleResource) Create(
 		"name": *createdRule.Name,
 	})
 
-	plan.wrap(*createdRule)
+	resp.Diagnostics.Append(plan.wrap(ctx, *createdRule)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	plan.LastUpdated = utils.GenerateUpdateTimestamp()
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -369,7 +467,11 @@ func (r *reconRuleResource) Read(
 		return
 	}
 
-	state.wrap(*rule)
+	resp.Diagnostics.Append(state.wrap(ctx, *rule)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -398,6 +500,14 @@ func (r *reconRuleResource) Update(
 	breachMonitorOnly := plan.BreachMonitorOnly.ValueBool()
 	substringMatchingEnabled := plan.SubstringMatchingEnabled.ValueBool()
 
+	matchOnTsqResultTypes := make([]string, 0)
+	if !plan.MatchOnTsqResultTypes.IsNull() && !plan.MatchOnTsqResultTypes.IsUnknown() {
+		resp.Diagnostics.Append(plan.MatchOnTsqResultTypes.ElementsAs(ctx, &matchOnTsqResultTypes, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	updateReq := &models.DomainUpdateRuleRequestV1{
 		ID:                       &ruleID,
 		Name:                     &name,
@@ -407,6 +517,7 @@ func (r *reconRuleResource) Update(
 		BreachMonitoringEnabled:  &breachMonitoringEnabled,
 		BreachMonitorOnly:        &breachMonitorOnly,
 		SubstringMatchingEnabled: &substringMatchingEnabled,
+		MatchOnTsqResultTypes:    matchOnTsqResultTypes,
 	}
 
 	params := recon.NewUpdateRulesV1ParamsWithContext(ctx)
@@ -420,7 +531,20 @@ func (r *reconRuleResource) Update(
 		return
 	}
 
-	if updateResp == nil || updateResp.Payload == nil || len(updateResp.Payload.Resources) == 0 {
+	if updateResp == nil || updateResp.Payload == nil {
+		resp.Diagnostics.Append(tferrors.NewEmptyResponseError(tferrors.Update))
+		return
+	}
+
+	if len(updateResp.Payload.Errors) > 0 {
+		resp.Diagnostics.AddError(
+			"Failed to update",
+			formatReconAPIErrors(updateResp.Payload.Errors),
+		)
+		return
+	}
+
+	if len(updateResp.Payload.Resources) == 0 {
 		resp.Diagnostics.Append(tferrors.NewEmptyResponseError(tferrors.Update))
 		return
 	}
@@ -432,7 +556,11 @@ func (r *reconRuleResource) Update(
 		"name": *updatedRule.Name,
 	})
 
-	plan.wrap(*updatedRule)
+	resp.Diagnostics.Append(plan.wrap(ctx, *updatedRule)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	plan.LastUpdated = utils.GenerateUpdateTimestamp()
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -506,4 +634,19 @@ func getReconRule(
 	}
 
 	return resp.Payload.Resources[0], diags
+}
+
+// formatReconAPIErrors formats DomainReconAPIError slice into a readable string.
+func formatReconAPIErrors(errors []*models.DomainReconAPIError) string {
+	var msgs []string
+	for _, apiErr := range errors {
+		msg := fmt.Sprintf("[%d] %s", *apiErr.Code, *apiErr.Message)
+		for _, detail := range apiErr.Details {
+			if detail.Field != nil && detail.Message != nil {
+				msg += fmt.Sprintf(" (%s: %s)", *detail.Field, *detail.Message)
+			}
+		}
+		msgs = append(msgs, msg)
+	}
+	return strings.Join(msgs, "; ")
 }
