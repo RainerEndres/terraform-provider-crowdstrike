@@ -12,12 +12,22 @@ provider "crowdstrike" {
 
 resource "crowdstrike_recon_rule" "example" {
   name        = "example-recon-rule"
-  topic       = "SA_DOMAIN"
-  filter      = "example.com"
+  topic       = "SA_CVE"
+  filter      = "(phrase:'CVE-2024-1234')"
   priority    = "high"
   permissions = "private"
 
-  breach_monitoring_enabled = true
+  notification {
+    content_format = "enhanced"
+    frequency      = "asap"
+    recipients     = ["security-team@example.com"]
+  }
+
+  notification {
+    content_format = "standard"
+    frequency      = "weekly"
+    recipients     = ["management@example.com", "compliance@example.com"]
+  }
 }
 
 output "recon_rule" {

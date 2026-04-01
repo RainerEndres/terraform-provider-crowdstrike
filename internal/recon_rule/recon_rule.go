@@ -13,15 +13,19 @@ import (
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/scopes"
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/tferrors"
 	"github.com/crowdstrike/terraform-provider-crowdstrike/internal/utils"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -55,6 +59,26 @@ type reconRuleResource struct {
 	client *client.CrowdStrikeAPISpecification
 }
 
+type notificationModel struct {
+	ID               types.String `tfsdk:"id"`
+	Type             types.String `tfsdk:"type"`
+	ContentFormat    types.String `tfsdk:"content_format"`
+	Frequency        types.String `tfsdk:"frequency"`
+	Recipients       types.Set    `tfsdk:"recipients"`
+	TriggerMatchless types.Bool   `tfsdk:"trigger_matchless"`
+	Status           types.String `tfsdk:"status"`
+}
+
+var notificationAttrTypes = map[string]attr.Type{
+	"id":                types.StringType,
+	"type":              types.StringType,
+	"content_format":    types.StringType,
+	"frequency":         types.StringType,
+	"recipients":        types.SetType{ElemType: types.StringType},
+	"trigger_matchless": types.BoolType,
+	"status":            types.StringType,
+}
+
 type reconRuleResourceModel struct {
 	ID                       types.String `tfsdk:"id"`
 	Name                     types.String `tfsdk:"name"`
@@ -67,6 +91,7 @@ type reconRuleResourceModel struct {
 	SubstringMatchingEnabled types.Bool   `tfsdk:"substring_matching_enabled"`
 	MatchOnTsqResultTypes    types.Set    `tfsdk:"match_on_tsq_result_types"`
 	LookbackPeriod           types.Int64  `tfsdk:"lookback_period"`
+	Notification             types.List   `tfsdk:"notification"`
 	Status                   types.String `tfsdk:"status"`
 	StatusMessage            types.String `tfsdk:"status_message"`
 	CreatedTimestamp         types.String `tfsdk:"created_timestamp"`
@@ -77,6 +102,7 @@ type reconRuleResourceModel struct {
 func (m *reconRuleResourceModel) wrap(
 	ctx context.Context,
 	rule models.SadomainRule,
+	actions []*models.DomainActionV1,
 ) diag.Diagnostics {
 	var diags diag.Diagnostics
 
@@ -93,8 +119,8 @@ func (m *reconRuleResourceModel) wrap(
 	m.Status = types.StringPointerValue(rule.Status)
 	m.StatusMessage = types.StringValue(rule.StatusMessage)
 
-	tsqSet, tsqDiags := flex.FlattenStringValueSet(ctx, rule.MatchOnTsqResultTypes)
-	diags.Append(tsqDiags...)
+	tsqSet, d := flex.FlattenStringValueSet(ctx, rule.MatchOnTsqResultTypes)
+	diags.Append(d...)
 	if diags.HasError() {
 		return diags
 	}
@@ -108,7 +134,50 @@ func (m *reconRuleResourceModel) wrap(
 		m.UpdatedTimestamp = types.StringValue(rule.UpdatedTimestamp.String())
 	}
 
+	notifList, d := wrapNotifications(ctx, actions)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	m.Notification = notifList
+
 	return diags
+}
+
+func wrapNotifications(
+	ctx context.Context,
+	actions []*models.DomainActionV1,
+) (types.List, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if len(actions) == 0 {
+		return types.ListValueMust(types.ObjectType{AttrTypes: notificationAttrTypes}, []attr.Value{}), nil
+	}
+
+	var notifications []notificationModel
+	for _, action := range actions {
+		recipientsSet, d := flex.FlattenStringValueSet(ctx, action.Recipients)
+		diags.Append(d...)
+		if diags.HasError() {
+			return types.ListNull(types.ObjectType{AttrTypes: notificationAttrTypes}), diags
+		}
+
+		notifications = append(notifications, notificationModel{
+			ID:               types.StringPointerValue(action.ID),
+			Type:             types.StringPointerValue(action.Type),
+			ContentFormat:    types.StringPointerValue(action.ContentFormat),
+			Frequency:        types.StringPointerValue(action.Frequency),
+			Recipients:       recipientsSet,
+			TriggerMatchless: types.BoolPointerValue(action.TriggerMatchless),
+			Status:           types.StringPointerValue(action.Status),
+		})
+	}
+
+	result, d := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: notificationAttrTypes}, notifications)
+	diags.Append(d...)
+
+	return result, diags
 }
 
 func (r *reconRuleResource) Configure(
@@ -245,6 +314,9 @@ func (r *reconRuleResource) Schema(
 				Computed:            true,
 				MarkdownDescription: "The result types to monitor for. Only available for the `SA_TYPOSQUATTING` rule topic.",
 				ElementType:         types.StringType,
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.UseStateForUnknown(),
+				},
 				Validators: []validator.Set{
 					setvalidator.ValueStringsAre(
 						stringvalidator.OneOf("basedomains", "subdomains"),
@@ -257,6 +329,7 @@ func (r *reconRuleResource) Schema(
 				MarkdownDescription: "The duration (in days) for which the rule looks back in the past at first run.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
+					int64planmodifier.RequiresReplace(),
 				},
 			},
 			"status": schema.StringAttribute{
@@ -270,10 +343,82 @@ func (r *reconRuleResource) Schema(
 			"created_timestamp": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "The timestamp when the recon rule was created.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"updated_timestamp": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "The timestamp when the recon rule was last updated.",
+			},
+		},
+		// Allowed values from DomainCreateActionRequest and DomainActionV1 in gofalcon.
+		Blocks: map[string]schema.Block{
+			"notification": schema.ListNestedBlock{
+				MarkdownDescription: "Notification actions attached to this rule. Each notification defines how and when alerts are delivered.",
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Computed:            true,
+							MarkdownDescription: "The unique identifier of the notification.",
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+						"type": schema.StringAttribute{
+							Optional:            true,
+							Computed:            true,
+							Default:             stringdefault.StaticString("email"),
+							MarkdownDescription: "The notification type. Currently only `email` is supported.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("email"),
+							},
+						},
+						"content_format": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The level of detail in the notification content. Either `standard` or `enhanced`.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("standard", "enhanced"),
+							},
+						},
+						"frequency": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The time interval between notification triggers. One of `asap`, `daily`, or `weekly`.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("asap", "daily", "weekly"),
+							},
+						},
+						"recipients": schema.SetAttribute{
+							Required:            true,
+							MarkdownDescription: "The email addresses to notify.",
+							ElementType:         types.StringType,
+							Validators: []validator.Set{
+								setvalidator.SizeAtLeast(1),
+								setvalidator.ValueStringsAre(
+									stringvalidator.LengthAtLeast(1),
+								),
+							},
+						},
+						"trigger_matchless": schema.BoolAttribute{
+							Optional:            true,
+							Computed:            true,
+							Default:             booldefault.StaticBool(false),
+							MarkdownDescription: "Whether to trigger the notification periodically even when there are no new matches.",
+						},
+						"status": schema.StringAttribute{
+							Optional:            true,
+							Computed:            true,
+							Default:             stringdefault.StaticString("enabled"),
+							MarkdownDescription: "The notification status. Either `enabled` or `muted`.",
+							Validators: []validator.String{
+								stringvalidator.OneOf("enabled", "muted"),
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -327,10 +472,11 @@ func (r *reconRuleResource) ValidateConfig(
 	// substring_matching_enabled and match_on_tsq_result_types are only valid for SA_TYPOSQUATTING.
 	if topic != "SA_TYPOSQUATTING" {
 		if !cfg.SubstringMatchingEnabled.IsUnknown() && cfg.SubstringMatchingEnabled.ValueBool() {
-			resp.Diagnostics.AddAttributeError(
+			resp.Diagnostics.AddAttributeWarning(
 				path.Root("substring_matching_enabled"),
-				"Invalid Configuration",
-				"substring_matching_enabled can only be set to true for the SA_TYPOSQUATTING rule topic.",
+				"Unexpected Configuration",
+				"substring_matching_enabled is intended for the SA_TYPOSQUATTING rule topic. "+
+					"It may have no effect on other topics.",
 			)
 		}
 
@@ -422,13 +568,36 @@ func (r *reconRuleResource) Create(
 	}
 
 	createdRule := createResp.Payload.Resources[0]
+	ruleID := *createdRule.ID
 
 	tflog.Info(ctx, "Successfully created recon rule", map[string]any{
-		"id":   *createdRule.ID,
+		"id":   ruleID,
 		"name": *createdRule.Name,
 	})
 
-	resp.Diagnostics.Append(plan.wrap(ctx, *createdRule)...)
+	// Set the ID in state early so Terraform can track the resource even if
+	// subsequent operations (e.g. notification creation) fail.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), types.StringValue(ruleID))...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Extract planned notifications before wrap resets Notification.
+	var planNotifications []notificationModel
+	if !plan.Notification.IsNull() && !plan.Notification.IsUnknown() {
+		resp.Diagnostics.Append(plan.Notification.ElementsAs(ctx, &planNotifications, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(plan.wrap(ctx, *createdRule, nil)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Create notifications if configured.
+	resp.Diagnostics.Append(r.syncNotifications(ctx, &plan, ruleID, nil, planNotifications)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -467,7 +636,13 @@ func (r *reconRuleResource) Read(
 		return
 	}
 
-	resp.Diagnostics.Append(state.wrap(ctx, *rule)...)
+	actions, d := getActionsForRule(ctx, r.client, ruleID)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(state.wrap(ctx, *rule, actions)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -482,6 +657,12 @@ func (r *reconRuleResource) Update(
 ) {
 	var plan reconRuleResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var state reconRuleResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -556,7 +737,29 @@ func (r *reconRuleResource) Update(
 		"name": *updatedRule.Name,
 	})
 
-	resp.Diagnostics.Append(plan.wrap(ctx, *updatedRule)...)
+	// Extract planned and existing state notifications before wrap resets Notification.
+	var planNotifications []notificationModel
+	if !plan.Notification.IsNull() && !plan.Notification.IsUnknown() {
+		resp.Diagnostics.Append(plan.Notification.ElementsAs(ctx, &planNotifications, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	var stateNotifications []notificationModel
+	if !state.Notification.IsNull() && !state.Notification.IsUnknown() {
+		resp.Diagnostics.Append(state.Notification.ElementsAs(ctx, &stateNotifications, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(plan.wrap(ctx, *updatedRule, nil)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(r.syncNotifications(ctx, &plan, ruleID, stateNotifications, planNotifications)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -581,6 +784,25 @@ func (r *reconRuleResource) Delete(
 		"id": ruleID,
 	})
 
+	// Delete all notifications first.
+	var stateNotifications []notificationModel
+	if !state.Notification.IsNull() && !state.Notification.IsUnknown() {
+		resp.Diagnostics.Append(state.Notification.ElementsAs(ctx, &stateNotifications, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	for _, n := range stateNotifications {
+		if n.ID.IsNull() || n.ID.IsUnknown() {
+			continue
+		}
+		resp.Diagnostics.Append(r.deleteAction(ctx, n.ID.ValueString())...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	params := recon.NewDeleteRulesV1ParamsWithContext(ctx)
 	params.SetIds([]string{ruleID})
 
@@ -603,6 +825,283 @@ func (r *reconRuleResource) ImportState(
 	resp *resource.ImportStateResponse,
 ) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// syncNotifications creates, updates, and deletes notifications to match the plan.
+// stateNotifications is nil on initial create.
+func (r *reconRuleResource) syncNotifications(
+	ctx context.Context,
+	plan *reconRuleResourceModel,
+	ruleID string,
+	stateNotifications []notificationModel,
+	planNotifications []notificationModel,
+) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Build map of existing notifications by ID.
+	existingByID := make(map[string]notificationModel)
+	for _, n := range stateNotifications {
+		if !n.ID.IsNull() && !n.ID.IsUnknown() {
+			existingByID[n.ID.ValueString()] = n
+		}
+	}
+
+	// Track which existing IDs are still in the plan.
+	plannedIDs := make(map[string]bool)
+
+	var resultNotifications []notificationModel
+
+	for _, planned := range planNotifications {
+		if !planned.ID.IsNull() && !planned.ID.IsUnknown() {
+			// Update existing notification.
+			actionID := planned.ID.ValueString()
+			plannedIDs[actionID] = true
+
+			action, d := r.updateAction(ctx, planned)
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+			resultNotifications = append(resultNotifications, action)
+		} else {
+			// Create new notification.
+			action, d := r.createAction(ctx, ruleID, planned)
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+			resultNotifications = append(resultNotifications, action)
+		}
+	}
+
+	// Delete notifications that were in state but not in plan.
+	for id := range existingByID {
+		if !plannedIDs[id] {
+			diags.Append(r.deleteAction(ctx, id)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	// Set the notifications on the plan.
+	if len(resultNotifications) == 0 {
+		plan.Notification = types.ListValueMust(types.ObjectType{AttrTypes: notificationAttrTypes}, []attr.Value{})
+	} else {
+		notifList, d := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: notificationAttrTypes}, resultNotifications)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+		plan.Notification = notifList
+	}
+
+	return diags
+}
+
+func (r *reconRuleResource) createAction(
+	ctx context.Context,
+	ruleID string,
+	n notificationModel,
+) (notificationModel, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	contentFormat := n.ContentFormat.ValueString()
+	frequency := n.Frequency.ValueString()
+	triggerMatchless := n.TriggerMatchless.ValueBool()
+	actionType := n.Type.ValueString()
+
+	var recipients []string
+	diags.Append(n.Recipients.ElementsAs(ctx, &recipients, false)...)
+	if diags.HasError() {
+		return notificationModel{}, diags
+	}
+
+	createReq := &models.DomainRegisterActionsRequest{
+		RuleID: &ruleID,
+		Actions: []*models.DomainCreateActionRequest{
+			{
+				ContentFormat:    &contentFormat,
+				Frequency:        &frequency,
+				Recipients:       recipients,
+				TriggerMatchless: &triggerMatchless,
+				Type:             &actionType,
+			},
+		},
+	}
+
+	params := recon.NewCreateActionsV1ParamsWithContext(ctx)
+	params.SetBody(createReq)
+
+	resp, err := r.client.Recon.CreateActionsV1(params)
+	if err != nil {
+		diags.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Create, err, requiredScopes))
+		return notificationModel{}, diags
+	}
+
+	if resp == nil || resp.Payload == nil {
+		diags.Append(tferrors.NewEmptyResponseError(tferrors.Create))
+		return notificationModel{}, diags
+	}
+
+	if len(resp.Payload.Errors) > 0 {
+		diags.AddError("Failed to create notification", formatReconAPIErrors(resp.Payload.Errors))
+		return notificationModel{}, diags
+	}
+
+	if len(resp.Payload.Resources) == 0 {
+		diags.Append(tferrors.NewEmptyResponseError(tferrors.Create))
+		return notificationModel{}, diags
+	}
+
+	action := resp.Payload.Resources[0]
+	tflog.Info(ctx, "Created notification", map[string]any{
+		"id":      *action.ID,
+		"rule_id": ruleID,
+	})
+
+	recipientsSet, d := flex.FlattenStringValueSet(ctx, action.Recipients)
+	diags.Append(d...)
+
+	return notificationModel{
+		ID:               types.StringPointerValue(action.ID),
+		Type:             types.StringPointerValue(action.Type),
+		ContentFormat:    types.StringPointerValue(action.ContentFormat),
+		Frequency:        types.StringPointerValue(action.Frequency),
+		Recipients:       recipientsSet,
+		TriggerMatchless: types.BoolPointerValue(action.TriggerMatchless),
+		Status:           types.StringPointerValue(action.Status),
+	}, diags
+}
+
+func (r *reconRuleResource) updateAction(
+	ctx context.Context,
+	n notificationModel,
+) (notificationModel, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	actionID := n.ID.ValueString()
+	contentFormat := n.ContentFormat.ValueString()
+	frequency := n.Frequency.ValueString()
+	triggerMatchless := n.TriggerMatchless.ValueBool()
+	status := n.Status.ValueString()
+
+	var recipients []string
+	diags.Append(n.Recipients.ElementsAs(ctx, &recipients, false)...)
+	if diags.HasError() {
+		return notificationModel{}, diags
+	}
+
+	updateReq := &models.DomainUpdateActionRequest{
+		ID:               &actionID,
+		ContentFormat:    &contentFormat,
+		Frequency:        &frequency,
+		Recipients:       recipients,
+		TriggerMatchless: &triggerMatchless,
+		Status:           &status,
+	}
+
+	params := recon.NewUpdateActionV1ParamsWithContext(ctx)
+	params.SetBody(updateReq)
+
+	resp, err := r.client.Recon.UpdateActionV1(params)
+	if err != nil {
+		diags.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Update, err, requiredScopes))
+		return notificationModel{}, diags
+	}
+
+	if resp == nil || resp.Payload == nil {
+		diags.Append(tferrors.NewEmptyResponseError(tferrors.Update))
+		return notificationModel{}, diags
+	}
+
+	if len(resp.Payload.Errors) > 0 {
+		diags.AddError("Failed to update notification", formatReconAPIErrors(resp.Payload.Errors))
+		return notificationModel{}, diags
+	}
+
+	if len(resp.Payload.Resources) == 0 {
+		diags.Append(tferrors.NewEmptyResponseError(tferrors.Update))
+		return notificationModel{}, diags
+	}
+
+	action := resp.Payload.Resources[0]
+	tflog.Info(ctx, "Updated notification", map[string]any{
+		"id": *action.ID,
+	})
+
+	recipientsSet, d := flex.FlattenStringValueSet(ctx, action.Recipients)
+	diags.Append(d...)
+
+	return notificationModel{
+		ID:               types.StringPointerValue(action.ID),
+		Type:             types.StringPointerValue(action.Type),
+		ContentFormat:    types.StringPointerValue(action.ContentFormat),
+		Frequency:        types.StringPointerValue(action.Frequency),
+		Recipients:       recipientsSet,
+		TriggerMatchless: types.BoolPointerValue(action.TriggerMatchless),
+		Status:           types.StringPointerValue(action.Status),
+	}, diags
+}
+
+func (r *reconRuleResource) deleteAction(
+	ctx context.Context,
+	actionID string,
+) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	params := recon.NewDeleteActionV1ParamsWithContext(ctx)
+	params.SetID(actionID)
+
+	_, err := r.client.Recon.DeleteActionV1(params)
+	if err != nil {
+		diags.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Delete, err, requiredScopes))
+		return diags
+	}
+
+	tflog.Info(ctx, "Deleted notification", map[string]any{
+		"id": actionID,
+	})
+
+	return diags
+}
+
+// getActionsForRule queries all actions for a given rule ID.
+func getActionsForRule(
+	ctx context.Context,
+	apiClient *client.CrowdStrikeAPISpecification,
+	ruleID string,
+) ([]*models.DomainActionV1, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	filter := fmt.Sprintf("rule_id:'%s'", ruleID)
+	queryParams := recon.NewQueryActionsV1ParamsWithContext(ctx)
+	queryParams.SetFilter(&filter)
+
+	queryResp, err := apiClient.Recon.QueryActionsV1(queryParams)
+	if err != nil {
+		diags.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, requiredScopes))
+		return nil, diags
+	}
+
+	if queryResp == nil || queryResp.Payload == nil || len(queryResp.Payload.Resources) == 0 {
+		return nil, diags
+	}
+
+	getParams := recon.NewGetActionsV1ParamsWithContext(ctx)
+	getParams.SetIds(queryResp.Payload.Resources)
+
+	getResp, err := apiClient.Recon.GetActionsV1(getParams)
+	if err != nil {
+		diags.Append(tferrors.NewDiagnosticFromAPIError(tferrors.Read, err, requiredScopes))
+		return nil, diags
+	}
+
+	if getResp == nil || getResp.Payload == nil {
+		return nil, diags
+	}
+
+	return getResp.Payload.Resources, diags
 }
 
 // getReconRule retrieves a single recon rule by ID.
@@ -640,7 +1139,21 @@ func getReconRule(
 func formatReconAPIErrors(errors []*models.DomainReconAPIError) string {
 	var msgs []string
 	for _, apiErr := range errors {
-		msg := fmt.Sprintf("[%d] %s", *apiErr.Code, *apiErr.Message)
+		if apiErr == nil {
+			continue
+		}
+
+		var code int32
+		if apiErr.Code != nil {
+			code = *apiErr.Code
+		}
+
+		message := "unknown error"
+		if apiErr.Message != nil {
+			message = *apiErr.Message
+		}
+
+		msg := fmt.Sprintf("[%d] %s", code, message)
 		for _, detail := range apiErr.Details {
 			if detail.Field != nil && detail.Message != nil {
 				msg += fmt.Sprintf(" (%s: %s)", *detail.Field, *detail.Message)

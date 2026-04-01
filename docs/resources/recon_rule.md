@@ -39,12 +39,22 @@ provider "crowdstrike" {
 
 resource "crowdstrike_recon_rule" "example" {
   name        = "example-recon-rule"
-  topic       = "SA_DOMAIN"
-  filter      = "example.com"
+  topic       = "SA_CVE"
+  filter      = "(phrase:'CVE-2024-1234')"
   priority    = "high"
   permissions = "private"
 
-  breach_monitoring_enabled = true
+  notification {
+    content_format = "enhanced"
+    frequency      = "asap"
+    recipients     = ["security-team@example.com"]
+  }
+
+  notification {
+    content_format = "standard"
+    frequency      = "weekly"
+    recipients     = ["management@example.com", "compliance@example.com"]
+  }
 }
 
 output "recon_rule" {
@@ -69,6 +79,7 @@ output "recon_rule" {
 - `breach_monitoring_enabled` (Boolean) Whether to monitor for breach data. Only available for `SA_DOMAIN` and `SA_EMAIL` rule topics.
 - `lookback_period` (Number) The duration (in days) for which the rule looks back in the past at first run.
 - `match_on_tsq_result_types` (Set of String) The result types to monitor for. Only available for the `SA_TYPOSQUATTING` rule topic.
+- `notification` (Block List) Notification actions attached to this rule. Each notification defines how and when alerts are delivered. (see [below for nested schema](#nestedblock--notification))
 - `substring_matching_enabled` (Boolean) Whether to monitor for substring matches. Only available for the `SA_TYPOSQUATTING` rule topic.
 
 ### Read-Only
@@ -79,6 +90,25 @@ output "recon_rule" {
 - `status` (String) The current status of the recon rule.
 - `status_message` (String) The detailed status message of the recon rule.
 - `updated_timestamp` (String) The timestamp when the recon rule was last updated.
+
+<a id="nestedblock--notification"></a>
+### Nested Schema for `notification`
+
+Required:
+
+- `content_format` (String) The level of detail in the notification content. Either `standard` or `enhanced`.
+- `frequency` (String) The time interval between notification triggers. One of `asap`, `daily`, or `weekly`.
+- `recipients` (Set of String) The email addresses to notify.
+
+Optional:
+
+- `status` (String) The notification status. Either `enabled` or `muted`.
+- `trigger_matchless` (Boolean) Whether to trigger the notification periodically even when there are no new matches.
+- `type` (String) The notification type. Currently only `email` is supported.
+
+Read-Only:
+
+- `id` (String) The unique identifier of the notification.
 
 ## Import
 
